@@ -15,6 +15,7 @@ DRAFT_MODEL="${DRAFT_MODEL:?set DRAFT_MODEL to the DSpark draft GGUF path}"
 HOTNESS_CSV="${HOTNESS_CSV:?set HOTNESS_CSV to the expert hotness CSV path}"
 DECODE_HOTNESS_CSV="${DECODE_HOTNESS_CSV:-}"
 CONTEXT_CLIENT="${CONTEXT_CLIENT:-$SCRIPT_DIR/ds4_context_sweep.py}"
+SERVER_DECODE_SUMMARIZER="${SERVER_DECODE_SUMMARIZER:-$SCRIPT_DIR/summarize_ds4_server_decode.py}"
 EXPECTED_SHA256="${EXPECTED_SHA256:-0f785a7ffa406498aafb14553966eaed0f52220fed0f7cc016b66921d104d194}"
 PORT="${PORT:-18109}"
 MAX_CTX="${MAX_CTX:-18432}"
@@ -60,7 +61,8 @@ OUT_DIR="$OUT_ROOT/$RUN_ID"
 SERVER_LOG="$OUT_DIR/server.log"
 
 for required in "$SERVER_BIN" "$TOKENIZER_HARNESS" "$TARGET_MODEL" \
-    "$DRAFT_MODEL" "$HOTNESS_CSV" "$CONTEXT_CLIENT"; do
+    "$DRAFT_MODEL" "$HOTNESS_CSV" "$CONTEXT_CLIENT" \
+    "$SERVER_DECODE_SUMMARIZER"; do
     if [[ ! -e "$required" ]]; then
         echo "missing required path: $required" >&2
         exit 2
@@ -485,6 +487,14 @@ python3 "$CONTEXT_CLIENT" \
     --expected-sha256 "$EXPECTED_SHA256" \
     --json-out "$OUT_DIR/decode-client.json" \
     2>&1 | tee "$OUT_DIR/decode-client.log"
+
+python3 "$SERVER_DECODE_SUMMARIZER" \
+    --server-log "$SERVER_LOG" \
+    --targets "${target_args[@]}" \
+    --warmup "$WARMUP" --runs "$RUNS" \
+    --expected-tokens "$MAX_TOKENS" \
+    --json-out "$OUT_DIR/server-decode-summary.json" \
+    2>&1 | tee "$OUT_DIR/server-decode-summary.log"
 
 rocm-smi --showperflevel --showclocks --showmeminfo vram \
     >"$OUT_DIR/rocm-smi-after.txt" 2>&1 || true

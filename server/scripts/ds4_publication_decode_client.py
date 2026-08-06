@@ -147,6 +147,12 @@ def stream_request(
         "wall_s": round(wall_s, 6),
         "ttft_s": round(ttft_s, 6) if ttft_s is not None else None,
         "client_decode_s": round(decode_s, 6) if decode_s is not None else None,
+        # This transport diagnostic intentionally retains its historical
+        # formula. It is not model throughput: speculative block boundaries
+        # can move work before the first non-empty streamed text event while
+        # the numerator still includes every completion token.
+        "client_decode_rate_window": "first_nonempty_text_event_to_done",
+        "client_decode_rate_numerator_tokens": completion_tokens,
         "client_decode_tok_s": (
             round(client_decode_tps, 3) if client_decode_tps is not None else None
         ),

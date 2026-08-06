@@ -77,7 +77,7 @@ All entries below used the same q=5, 2K-context, 128-token exact-output run.
 The expected response SHA-256 was
 `0f785a7ffa406498aafb14553966eaed0f52220fed0f7cc016b66921d104d194`.
 
-| Plan | Median tok/s | Decision |
+| Plan | Legacy client tok/s | Decision |
 |---|---:|---|
 | Established route balance, shared stage on main | 88.602 | Qualified default |
 | Owner-local residual fusion, no shared split | 88.637 | Exact final binary; neutral, retained as opt-in primitive |
@@ -87,6 +87,12 @@ The expected response SHA-256 was
 | 12.5% shared-width peer shard, single-join owner fusion | 86.636 | Reject |
 | Repeated-expert route-slot alignment | 85.117 | Reject; remains disabled |
 | Complete shared stage on peer, all routed work on main | 84.022 | Reject; unstable in this profile |
+
+These historical client values divide all completion tokens by the interval
+from the first non-empty streamed text event to `[DONE]`. They are useful as a
+transport diagnostic, but speculative block boundaries can move work before
+that first event and inflate the value. Use the model-side DSpark rate from
+`server-decode-summary.json` for engine comparisons.
 
 The narrow shared shards lose more kernel efficiency than their extra overlap
 can recover. The complete peer stage also extends verification latency. These
@@ -129,3 +135,12 @@ DYNAMIC_MAIN_SLOTS_X4=13
 Do not promote a candidate from a microbenchmark alone. It must pass unit/GPU
 oracles, the exact response hash, warmups, and at least three measured model
 runs. Keep rejected candidates disabled and record their result here.
+
+The literal rebased profile at `ee160092ce106a017d50a11cf8110e3b21e3cc46`
+passed all seven measured exact-output requests. Its authoritative server
+decode median was **73.7 tok/s** (73.5-73.8); the legacy client field was
+83.403 tok/s. The earlier 89.876 client result had a 73.2 tok/s server median:
+it excluded a slow first rejected speculative step from its time window while
+still counting all 128 tokens. The newer capture path has full first-block
+acceptance and slightly higher actual server throughput, despite the lower
+legacy client number.

@@ -59,8 +59,28 @@ The runner fails on a different length or hash.
 
 Each run directory records the source commit, server checksum, tuning-table
 path and checksum, complete environment, model metadata, individual request
-records, summary statistics, server log, and ROCm/VRAM state. Set `OUT_ROOT`
-and `RUN_ID` to choose its location.
+records, client summary, authoritative model-side decode summary, server log,
+and ROCm/VRAM state. Set `OUT_ROOT` and `RUN_ID` to choose its location.
+
+## Measured result
+
+The final two-warmup/seven-run qualification used source
+`ee160092ce106a017d50a11cf8110e3b21e3cc46` and server SHA-256
+`2bd2282c5409f5d6573fbf0763c00bfcbdbe50c547d64231c8213eeee8ec5119`.
+All seven measured requests returned 128 tokens with the required response
+hash.
+
+- authoritative server decode: **73.7 tok/s median**, 73.5-73.8 range;
+- historical client diagnostic: 83.403 tok/s median, 83.122-83.509 range;
+- speculative acceptance: 1.00 median.
+
+An earlier experiment reported 89.876 tok/s in the client diagnostic, but its
+model-side median was 73.2 tok/s. That client formula starts timing at the
+first non-empty streamed text event while counting every completion token. A
+slow first rejected speculative step therefore fell outside its time window
+and inflated the result. The repaired capture path accepts the first block and
+is slightly faster model-side, even though that legacy client number is lower.
+Use `server-decode-summary.json` for engine performance claims.
 
 ## Qualified placement
 
