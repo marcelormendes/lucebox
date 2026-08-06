@@ -396,7 +396,13 @@ server_args=(
     echo "critical_path_placement=$CRITICAL_PATH_PLACEMENT"
     echo "main_to_peer_rate=$MAIN_TO_PEER_RATE"
     echo "balance_min_hot=$BALANCE_MIN_HOT"
+    echo "hotness_csv=$HOTNESS_CSV"
+    echo "hotness_sha256=$(sha256sum "$HOTNESS_CSV" | awk '{print $1}')"
     echo "decode_hotness_csv=$DECODE_HOTNESS_CSV"
+    if [[ -n "$DECODE_HOTNESS_CSV" ]]; then
+        echo "decode_hotness_sha256=$(sha256sum \
+            "$DECODE_HOTNESS_CSV" | awk '{print $1}')"
+    fi
     echo "dynamic_route_balance=$DYNAMIC_ROUTE_BALANCE"
     echo "dynamic_main_slots=$DYNAMIC_MAIN_SLOTS"
     echo "dynamic_main_slots_x2=$DYNAMIC_MAIN_SLOTS_X2"

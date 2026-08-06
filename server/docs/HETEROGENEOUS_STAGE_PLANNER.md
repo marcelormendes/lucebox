@@ -106,7 +106,14 @@ small matrix shards.
 
 ## Reproduction
 
-Use `scripts/qualify_ds4_q5_amd.sh`. The runner records the source commit,
+For the qualified R9700 + Strix Halo pair, use
+`scripts/qualify_ds4_q5_r9700_strix.sh`. It supplies the checked-in routing
+profiles, verifies their checksums and the ROCm 7.2.4 hipBLASLt table, and then
+calls the general runner. Only `TARGET_MODEL`, `DRAFT_MODEL`, and `BUILD_DIR`
+are required. See `DS4_R9700_STRIX_PROFILE.md` for the exact build and launch.
+
+For a new hardware pair, use `scripts/qualify_ds4_q5_amd.sh` with newly
+qualified routing inputs. The runner records the source commit,
 binary checksum, all policy controls, exact response hashes, individual runs,
 and summary statistics. Relevant switches are:
 
