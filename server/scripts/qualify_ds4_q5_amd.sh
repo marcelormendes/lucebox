@@ -41,6 +41,10 @@ SET_PERF_LEVEL="${SET_PERF_LEVEL:-1}"
 HASH_MODELS="${HASH_MODELS:-0}"
 CUDA_GRAPH_STATS_EVERY="${CUDA_GRAPH_STATS_EVERY:-200}"
 CUDA_DISABLE_GRAPHS_DEVICES="${CUDA_DISABLE_GRAPHS_DEVICES:-}"
+ROCBLAS_USE_HIPBLASLT="${ROCBLAS_USE_HIPBLASLT:-}"
+HIPBLASLT_LOG_MASK="${HIPBLASLT_LOG_MASK:-}"
+HIPBLASLT_TUNING_FILE="${HIPBLASLT_TUNING_FILE:-}"
+HIPBLASLT_TUNING_OVERRIDE_FILE="${HIPBLASLT_TUNING_OVERRIDE_FILE:-}"
 DYNAMIC_ROUTE_BALANCE="${DYNAMIC_ROUTE_BALANCE:-0}"
 DYNAMIC_MAIN_SLOTS="${DYNAMIC_MAIN_SLOTS:-3}"
 DYNAMIC_MAIN_SLOTS_X2="${DYNAMIC_MAIN_SLOTS_X2:-}"
@@ -294,6 +298,20 @@ if [[ -n "$CUDA_DISABLE_GRAPHS_DEVICES" ]]; then
         "GGML_CUDA_DISABLE_GRAPHS_DEVICES=$CUDA_DISABLE_GRAPHS_DEVICES"
     )
 fi
+if [[ -n "$ROCBLAS_USE_HIPBLASLT" ]]; then
+    server_env+=("ROCBLAS_USE_HIPBLASLT=$ROCBLAS_USE_HIPBLASLT")
+fi
+if [[ -n "$HIPBLASLT_LOG_MASK" ]]; then
+    server_env+=("HIPBLASLT_LOG_MASK=$HIPBLASLT_LOG_MASK")
+fi
+if [[ -n "$HIPBLASLT_TUNING_FILE" ]]; then
+    server_env+=("HIPBLASLT_TUNING_FILE=$HIPBLASLT_TUNING_FILE")
+fi
+if [[ -n "$HIPBLASLT_TUNING_OVERRIDE_FILE" ]]; then
+    server_env+=(
+        "HIPBLASLT_TUNING_OVERRIDE_FILE=$HIPBLASLT_TUNING_OVERRIDE_FILE"
+    )
+fi
 
 # Preserve only the explicit profiler-wrapper controls across env -i. Ordinary
 # qualification runs leave these unset and retain the exact established env.
@@ -391,6 +409,10 @@ server_args=(
     echo "max_ctx=$MAX_CTX"
     echo "cuda_graph_stats_every=$CUDA_GRAPH_STATS_EVERY"
     echo "cuda_disable_graphs_devices=$CUDA_DISABLE_GRAPHS_DEVICES"
+    echo "rocblas_use_hipblaslt=$ROCBLAS_USE_HIPBLASLT"
+    echo "hipblaslt_log_mask=$HIPBLASLT_LOG_MASK"
+    echo "hipblaslt_tuning_file=$HIPBLASLT_TUNING_FILE"
+    echo "hipblaslt_tuning_override_file=$HIPBLASLT_TUNING_OVERRIDE_FILE"
     sha256sum "$SERVER_BIN"
     stat -c 'target_model=%n bytes=%s mtime=%y' "$TARGET_MODEL"
     stat -c 'draft_model=%n bytes=%s mtime=%y' "$DRAFT_MODEL"
