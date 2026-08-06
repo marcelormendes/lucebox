@@ -70,6 +70,11 @@ if [[ -n "$DECODE_HOTNESS_CSV" && ! -e "$DECODE_HOTNESS_CSV" ]]; then
     echo "missing decode hotness path: $DECODE_HOTNESS_CSV" >&2
     exit 2
 fi
+if [[ -n "$HIPBLASLT_TUNING_OVERRIDE_FILE" &&
+      ! -f "$HIPBLASLT_TUNING_OVERRIDE_FILE" ]]; then
+    echo "missing hipBLASLt tuning override: $HIPBLASLT_TUNING_OVERRIDE_FILE" >&2
+    exit 2
+fi
 
 case "$FORCE_GRAPH_REPLAY:$SERIAL_INDEX_SCAN" in
     0:0|0:1|1:0|1:1) ;;
@@ -413,6 +418,10 @@ server_args=(
     echo "hipblaslt_log_mask=$HIPBLASLT_LOG_MASK"
     echo "hipblaslt_tuning_file=$HIPBLASLT_TUNING_FILE"
     echo "hipblaslt_tuning_override_file=$HIPBLASLT_TUNING_OVERRIDE_FILE"
+    if [[ -n "$HIPBLASLT_TUNING_OVERRIDE_FILE" ]]; then
+        echo "hipblaslt_tuning_override_sha256=$(sha256sum \
+            "$HIPBLASLT_TUNING_OVERRIDE_FILE" | awk '{print $1}')"
+    fi
     sha256sum "$SERVER_BIN"
     stat -c 'target_model=%n bytes=%s mtime=%y' "$TARGET_MODEL"
     stat -c 'draft_model=%n bytes=%s mtime=%y' "$DRAFT_MODEL"
