@@ -422,24 +422,72 @@ bool glm5next_load_weights(const char * model_path,
     const int n_tensors = gguf_get_n_tensors(gguf_ctx);
     std::fprintf(stderr, "[glm5next_loader] GGUF contains %d tensors\n", n_tensors);
 
-    // Read key hyperparameters
-    // TODO: actual GGUF key reading from glm5next.* namespace
-    w.n_vocab = 154880;
-    w.n_embd = 4096;
-    w.n_layer = 45;
-    w.n_head = 64;
-    w.head_dim = 64;
-    w.n_ff = 14336;
-    w.n_expert_ff = 2048;
-    w.n_expert = 288;
-    w.n_expert_used = 8;
-    w.first_moe_layer = 3;
-    w.n_hc = 4;
-    w.hc_sinkhorn_iters = 20;
-    w.kpool = 4;
-    w.full_attn_interval = 4;
-    w.index_topk = 2048;
-    w.swiglu_clamp = 10.0f;
+    // Helper to read GGUF keys
+    auto get_u32 = [gguf_ctx](const char * key, uint32_t def) -> uint32_t {
+        int64_t id = gguf_find_key(gguf_ctx, key);
+        if (id < 0) return def;
+        if (gguf_get_kv_type(gguf_ctx, id) == GGUF_TYPE_ARRAY) {
+            if (gguf_get_arr_n(gguf_ctx, id) == 0) return def;
+            return ((const uint32_t *)gguf_get_arr_data(gguf_ctx, id))[0];
+        }
+        return gguf_get_val_u32(gguf_ctx, id);
+    };
+    
+    auto get_f32 = [gguf_ctx](const char * key, float def) -> float {
+        int64_t id = gguf_find_key(gguf_ctx, key);
+        if (id < 0) return def;
+        if (gguf_get_kv_type(gguf_ctx, id) == GGUF_TYPE_ARRAY) {
+            if (gguf_get_arr_n(gguf_ctx, id) == 0) return def;
+            return ((const float *)gguf_get_arr_data(gguf_ctx, id))[0];
+        }
+        return gguf_get_val_f32(gguf_ctx, id);
+    };
+    
+    // Read key hyperparameters from glm5next.* namespace
+    // Essential keys - must be present
+    w.n_vocab = get_u32("glm5next.vocab_size", 154880);
+    w.n_embd = get_u32("glm5next.embedding_length", 4096);
+    w.n_layer = get_u32("glm5next.block_count", 45);
+    w.n_head = get_u32("glm5next.attention.head_count", 64);
+    w.head_dim = get_u32("glm5next.attention.head_dim", 64);
+    
+    // MoE and FFN params
+    w.n_expert = get_u32("glm5next.expert_count", 288);
+    w.n_expert_used = get_u32("glm5next.expert_used_count", 8);
+    w.n_expert_ff = get_u32("glm5next.expert_ff", 2048);
+    w.n_ff = get_u32("glm5next.feed_forward_length", 14336);
+    
+    // Dense FFN layers
+    w.first_moe_layer = get_u32("glm5next.expert_first_layer", 3);
+    
+    // mHC (hierarchical controller) params
+    w.n_hc = get_u32("glm5next.hc.count", 4);
+    w.hc_sinkhorn_iters = get_u32("glm5next.hc.sinkhorn_iters", 20);
+    
+    // IndexPool DSA params
+    w.kpool = get_u32("glm5next.attention.indexer.block_size", 4);
+    if (w.kpool == 0) {
+        // Fallback for unsloth GGUFs that use indexer.kpool
+        w.kpool = get_u32("glm5next.attention.indexer.kpool", 4);
+    }
+    w.full_attn_interval = get_u32("glm5next.attention.full_attn_interval", 4);
+    w.index_topk = get_u32("glm5next.attention.indexer.topk", 2048);
+    
+    // KDA linear attention params
+    w.kda_conv1d_dim = get_u32("glm5next.ssm.conv_kernel", 0);
+    w.kda_state_dim = get_u32("glm5next.ssm.state_size", 0);
+    
+    // MLA params (NoPE)
+    w.n_lora_q = get_u32("glm5next.attention.lora_q", 0);
+    w.qk_rope_head_dim = get_u32("glm5next.attention.qk_rope_head_dim", 0);
+    
+    // Activation params
+    w.swiglu_clamp = get_f32("glm5next.ffn.swiglu_clamp", 10.0f);
+    
+    // Token embedding type
+    if (w.tok_embd) {
+        w.tok_embd_type = w.tok_embd->type;
+    }
 
     std::fprintf(stderr, "[glm5next_loader] n_layer=%d, n_expert=%d, first_moe=%d\n",
                  w.n_layer, w.n_expert, w.first_moe_layer);
@@ -504,7 +552,7 @@ bool glm5next_load_weights(const char * model_path,
                 layer_name(i, "ffn_down_shexp.weight").c_str());
         }
 
-        // mHC tensors
+        // mHC tensors (all 45 trunk layers)
         layer.hc_attn_fn = ggml_get_tensor(ctx, layer_name(i, "hc_attn_fn.weight").c_str());
         layer.hc_attn_base = ggml_get_tensor(ctx, layer_name(i, "hc_attn_base.weight").c_str());
         layer.hc_attn_scale = ggml_get_tensor(ctx, layer_name(i, "hc_attn_scale.weight").c_str());
@@ -512,8 +560,52 @@ bool glm5next_load_weights(const char * model_path,
         layer.hc_ffn_base = ggml_get_tensor(ctx, layer_name(i, "hc_ffn_base.weight").c_str());
         layer.hc_ffn_scale = ggml_get_tensor(ctx, layer_name(i, "hc_ffn_scale.weight").c_str());
 
-        // KDA or MLA tensors (determine by full_attn_interval)
-        // Stub: actual tensor loading based on layer type
+        // Determine if this is a KDA (recurrent) or MLA (full attention) layer
+        // full_attn_interval=4 means DSA/MLA on layers 3,7,11,... (layers where (i+1) % 4 == 0)
+        const bool is_kda_layer = ((i + 1) % w.full_attn_interval) != 0;
+        
+        if (is_kda_layer) {
+            // KDA linear attention (34 of 45 layers)
+            // Maps to kimi-linear ssm_* tensor names
+            layer.kda_conv1d_q = ggml_get_tensor(ctx, layer_name(i, "ssm_conv1d_q.weight").c_str());
+            layer.kda_conv1d_k = ggml_get_tensor(ctx, layer_name(i, "ssm_conv1d_k.weight").c_str());
+            layer.kda_conv1d_v = ggml_get_tensor(ctx, layer_name(i, "ssm_conv1d_v.weight").c_str());
+            
+            // Q/K/V projections (not yet handled, need proper tensor names)
+            // In kimi-linear these would be wq/wk/wv, need to verify exact names
+            
+            layer.kda_f_a = ggml_get_tensor(ctx, layer_name(i, "ssm_f_a.weight").c_str());
+            layer.kda_f_b = ggml_get_tensor(ctx, layer_name(i, "ssm_f_b.weight").c_str());
+            layer.kda_g_a = ggml_get_tensor(ctx, layer_name(i, "ssm_g_a.weight").c_str());
+            layer.kda_g_b = ggml_get_tensor(ctx, layer_name(i, "ssm_g_b.weight").c_str());
+            layer.kda_beta = ggml_get_tensor(ctx, layer_name(i, "ssm_beta.weight").c_str());
+            layer.kda_a_log = ggml_get_tensor(ctx, layer_name(i, "ssm_a.weight").c_str());
+            layer.kda_dt_bias = ggml_get_tensor(ctx, layer_name(i, "ssm_dt.bias").c_str());
+            if (!layer.kda_dt_bias) {
+                // Fallback: some converters use .weight suffix
+                layer.kda_dt_bias = ggml_get_tensor(ctx, layer_name(i, "ssm_dt.weight").c_str());
+            }
+            
+            // Output projection
+            layer.attn_wo = ggml_get_tensor(ctx, layer_name(i, "attn_out.weight").c_str());
+        } else {
+            // MLA sparse attention (11 of 45 layers) with IndexPool DSA
+            // NoPE (qk_rope_head_dim=0)
+            layer.attn_q_a = ggml_get_tensor(ctx, layer_name(i, "attn_q_a.weight").c_str());
+            layer.attn_q_a_norm = ggml_get_tensor(ctx, layer_name(i, "attn_q_a_norm.weight").c_str());
+            layer.attn_q_b = ggml_get_tensor(ctx, layer_name(i, "attn_q_b.weight").c_str());
+            
+            // Single KV head (MLA)
+            layer.attn_wk_b = ggml_get_tensor(ctx, layer_name(i, "attn_k_b.weight").c_str());
+            layer.attn_wv_b = ggml_get_tensor(ctx, layer_name(i, "attn_v_b.weight").c_str());
+            layer.attn_wo = ggml_get_tensor(ctx, layer_name(i, "attn_out.weight").c_str());
+            
+            // IndexPool DSA compressor (kpool=4)
+            layer.indexer_compressor_ape = ggml_get_tensor(ctx,
+                layer_name(i, "indexer_compressor_ape.weight").c_str());
+            layer.indexer_compressor_gate = ggml_get_tensor(ctx,
+                layer_name(i, "indexer_compressor_gate.weight").c_str());
+        }
     }
 
     // Output head
