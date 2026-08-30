@@ -173,7 +173,7 @@ struct Glm5NextCache {
 
 struct Glm5NextBackendConfig {
     const char * target_path = nullptr;
-    PlacementDevice device;
+    DevicePlacement device;
     int chunk = 512;
     int max_ctx = 0;  // auto-fit
 };
