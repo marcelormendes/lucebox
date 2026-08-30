@@ -417,10 +417,15 @@ static ggml_tensor * glm5next_dense_ffn(ggml_context * ctx,
     return out;
 }
 
-// MoE FFN - REAL implementation with sigmoid routing + top-8 selection
+// MoE FFN - REAL implementation with sigmoid routing + top-8 expert execution
+// This version builds the routing graph; actual expert matmul happens via hybrid storage
 static ggml_tensor * glm5next_moe_ffn(ggml_context * ctx,
                                      ggml_tensor * cur,
                                      const Glm5NextLayer & layer,
+                                     const MoeHybridConfig & moe_cfg,
+                                     const MoeLayerDesc & desc,
+                                     const MoeHybridLayerStorage & storage,
+                                     ggml_cgraph * schedule_graph,
                                      int n_tokens, int n_expert, int n_expert_used,
                                      float swiglu_clamp) {
     // Router: sigmoid(gate_logits) + exp_probs_b bias
@@ -445,38 +450,21 @@ static ggml_tensor * glm5next_moe_ffn(ggml_context * ctx,
     ggml_tensor * weight_sum = ggml_sum_rows(ctx, selected_weights);
     selected_weights = ggml_div(ctx, selected_weights, weight_sum);
     
-    // Routed experts evaluation
-    // For simplicity in initial implementation, compute weighted sum of expert outputs
-    // Full implementation would use moe_hybrid_ffn_eval for hot/cold expert split
+    // Build hybrid MoE FFN graph - this calls into the actual expert evaluation
+    // which performs gate/up/down matmuls for the top-8 selected experts
+    MoeHybridGraphInputs moe_inputs;
+    if (!build_moe_hybrid_ffn_graph(ctx, schedule_graph, moe_cfg, desc, storage,
+                                    cur, topk_indices, selected_weights,
+                                    n_tokens, moe_inputs,
+                                    true,   // include_shared
+                                    false,  // allow_fused_combine
+                                    MoeHybridJoinMode::OwnerPartialSums)) {
+        std::fprintf(stderr, "[glm5next] build_moe_hybrid_ffn_graph failed\n");
+        return nullptr;
+    }
     
-    // Process each selected expert
-    // This is a simplified expert evaluation - full version needs moe_hybrid_ffn_eval
-    // For now, approximate by running shared expert (which represents average behavior)
-    
-    ggml_tensor * routed_out = nullptr;
-    
-    // Shared expert (always active)
-    ggml_tensor * shared_gate = ggml_mul_mat(ctx, layer.moe_shared_gate, cur);
-    ggml_tensor * shared_up = ggml_mul_mat(ctx, layer.moe_shared_up, cur);
-    
-    shared_gate = ggml_clamp(ctx, shared_gate, -INFINITY, swiglu_clamp);
-    shared_gate = ggml_silu(ctx, shared_gate);
-    shared_up = ggml_clamp(ctx, shared_up, -swiglu_clamp, swiglu_clamp);
-    
-    ggml_tensor * shared_gated = ggml_mul(ctx, shared_gate, shared_up);
-    ggml_tensor * shared_out = ggml_mul_mat(ctx, layer.moe_shared_down, shared_gated);
-    
-    // For full implementation: need to call moe_hybrid_ffn_eval or build_moe_hybrid_ffn_graph
-    // to properly route and execute the 288 experts based on topk_indices and selected_weights
-    // This requires MoeHybridStorage setup in the backend
-    
-    // Placeholder: use shared expert as approximation until hybrid evaluation is wired
-    routed_out = shared_out;
-    
-    // Final output: routed + shared (in full impl, routed would be actual top-8 execution)
-    ggml_tensor * out = ggml_add(ctx, routed_out, shared_out);
-    
-    return out;
+    // The output tensor contains routed expert results + shared expert
+    return moe_inputs.output;
 }
 
 } // anonymous namespace
@@ -491,7 +479,8 @@ ggml_tensor * glm5next_build_graph(
     Glm5NextCache & cache,
     const int32_t * tokens,
     int n_tokens,
-    int kv_pos) {
+    int kv_pos,
+    MoeHybridStorage * moe_storage) {
     
     if (!ctx || !tokens || n_tokens <= 0) {
         std::fprintf(stderr, "[glm5next_graph] invalid arguments\n");
@@ -629,12 +618,45 @@ ggml_tensor * glm5next_build_graph(
             } else {
                 // MoE FFN: sigmoid routing, top-8 of 288 experts + 1 shared
                 if (!layer.moe_gate || !layer.moe_shared_gate || 
-                    !layer.moe_shared_up || !layer.moe_shared_down) {
-                    std::fprintf(stderr, "[glm5next_graph] layer %d missing MoE tensors\n", il);
+                    !layer.moe_shared_up || !layer.moe_shared_down || !moe_storage) {
+                    std::fprintf(stderr, "[glm5next_graph] layer %d missing MoE tensors or storage\n", il);
                     return nullptr;
                 }
-                cur = glm5next_moe_ffn(ctx, cur, layer, n_tokens, 
+                
+                const int moe_layer_idx = il - w.first_moe_layer;
+                if (moe_layer_idx < 0 || (size_t)moe_layer_idx >= moe_storage->layers.size()) {
+                    std::fprintf(stderr, "[glm5next_graph] invalid MoE layer index %d\n", moe_layer_idx);
+                    return nullptr;
+                }
+                
+                // Build MoE config
+                MoeHybridConfig moe_cfg;
+                moe_cfg.n_embd = w.n_embd;
+                moe_cfg.n_expert = w.n_expert;
+                moe_cfg.n_expert_used = w.n_expert_used;
+                moe_cfg.n_ff_exp = w.n_expert_ff;
+                moe_cfg.n_ff_shexp = w.n_expert_ff;
+                moe_cfg.swiglu_clamp = w.swiglu_clamp;
+                
+                // Build layer descriptor
+                MoeLayerDesc desc;
+                desc.ffn_gate_exps = layer.moe_experts_gate;
+                desc.ffn_up_exps = layer.moe_experts_up;
+                desc.ffn_down_exps = layer.moe_experts_down;
+                desc.ffn_gate_shexp = layer.moe_shared_gate;
+                desc.ffn_up_shexp = layer.moe_shared_up;
+                desc.ffn_down_shexp = layer.moe_shared_down;
+                
+                // Call real MoE evaluation (creates schedule graph internally)
+                ggml_cgraph * schedule_graph = nullptr;  // Created by hybrid FFN builder
+                cur = glm5next_moe_ffn(ctx, cur, layer, moe_cfg, desc,
+                                      moe_storage->layers[moe_layer_idx],
+                                      schedule_graph, n_tokens, 
                                       w.n_expert, w.n_expert_used, w.swiglu_clamp);
+                if (!cur) {
+                    std::fprintf(stderr, "[glm5next_graph] MoE FFN failed at layer %d\n", il);
+                    return nullptr;
+                }
                 ggml_set_name(cur, ("moe_ffn_out_" + std::to_string(il)).c_str());
             }
             

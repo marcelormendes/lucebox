@@ -184,6 +184,9 @@ bool glm5next_load_weights(const char * model_path,
                            ggml_context * ctx,
                            std::vector<const void *> & registered_mix_bases);
 
+// Forward declarations for MoE
+struct MoeHybridStorage;
+
 // Graph builder - constructs forward pass computation graph
 ggml_tensor * glm5next_build_graph(
     ggml_context * ctx,
@@ -191,6 +194,7 @@ ggml_tensor * glm5next_build_graph(
     Glm5NextCache & cache,
     const int32_t * tokens,
     int n_tokens,
-    int kv_pos);
+    int kv_pos,
+    MoeHybridStorage * moe_storage = nullptr);
 
 }  // namespace dflash::common

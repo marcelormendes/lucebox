@@ -73,10 +73,6 @@ bool Glm5NextBackend::load_model() {
 }
 
 bool Glm5NextBackend::init_hybrid_model() {
-    // Simplified: no dual-GPU placement or hybrid expert offload in initial version
-    // Full implementation would compute placement and initialize MoeHybridStorage
-    std::fprintf(stderr, "[glm5next] using monolithic model (no hybrid placement)\n");
-    
     // Initialize backend
     backend_ = ggml_backend_cuda_init(cfg_.device.gpu);
     if (!backend_) {
@@ -88,6 +84,60 @@ bool Glm5NextBackend::init_hybrid_model() {
     cache_.n_ctx = cfg_.max_ctx > 0 ? cfg_.max_ctx : 8192;
     cache_.cur_pos = 0;
     cache_.n_past = 0;
+    
+    // Build MoE hybrid storage for expert evaluation (all-hot, GPU-only)
+    const int n_moe_layers = w_.n_layer - w_.first_moe_layer;
+    if (n_moe_layers > 0) {
+        // Create all-hot placement: all 288 experts on GPU
+        moe_placement_.n_expert = w_.n_expert;
+        moe_placement_.hot_expert_ids.resize(n_moe_layers);
+        for (int il = 0; il < n_moe_layers; ++il) {
+            moe_placement_.hot_expert_ids[il].resize(w_.n_expert);
+            for (int e = 0; e < w_.n_expert; ++e) {
+                moe_placement_.hot_expert_ids[il][e] = e;  // All hot
+            }
+        }
+        
+        // Build layer descriptors
+        std::vector<MoeLayerDesc> layer_descs;
+        layer_descs.reserve(n_moe_layers);
+        for (int il = w_.first_moe_layer; il < w_.n_layer; ++il) {
+            const auto & layer = w_.layers[il];
+            MoeLayerDesc desc;
+            desc.ffn_gate_exps = layer.moe_experts_gate;
+            desc.ffn_up_exps = layer.moe_experts_up;
+            desc.ffn_down_exps = layer.moe_experts_down;
+            desc.ffn_gate_shexp = layer.moe_shared_gate;
+            desc.ffn_up_shexp = layer.moe_shared_up;
+            desc.ffn_down_shexp = layer.moe_shared_down;
+            layer_descs.push_back(desc);
+        }
+        
+        // MoE config
+        MoeHybridConfig moe_cfg;
+        moe_cfg.n_embd = w_.n_embd;
+        moe_cfg.n_expert = w_.n_expert;
+        moe_cfg.n_expert_used = w_.n_expert_used;
+        moe_cfg.n_ff_exp = w_.n_expert_ff;
+        moe_cfg.n_ff_shexp = w_.n_expert_ff;  // Shared expert same size
+        moe_cfg.n_layer = n_moe_layers;
+        moe_cfg.first_moe_layer = w_.first_moe_layer;
+        moe_cfg.swiglu_clamp = w_.swiglu_clamp;
+        moe_cfg.cold_expert_backend = MoeHybridColdBackend::Cpu;
+        moe_cfg.materialize_hot_experts = true;
+        moe_cfg.materialize_cold_experts = false;  // All on GPU
+        
+        moe_hybrid_ = std::make_shared<MoeHybridStorage>();
+        std::string err;
+        if (!build_moe_hybrid_storage(moe_cfg, backend_, moe_placement_, 
+                                      layer_descs, *moe_hybrid_, &err)) {
+            std::fprintf(stderr, "[glm5next] failed to build MoE storage: %s\n", err.c_str());
+            return false;
+        }
+        
+        std::fprintf(stderr, "[glm5next] MoE storage initialized: %d layers, %d experts (all GPU)\n",
+                     n_moe_layers, w_.n_expert);
+    }
     
     std::fprintf(stderr, "[glm5next] backend initialized: ctx=%d\n", cache_.n_ctx);
     return true;
@@ -163,7 +213,8 @@ GenerateResult Glm5NextBackend::generate_impl(
     ggml_tensor * logits = glm5next_build_graph(
         ctx, w_, cache_,
         req.prompt.data(), 1,  // Just first token for now
-        cache_.cur_pos
+        cache_.cur_pos,
+        moe_hybrid_.get()  // Pass MoE storage for expert evaluation
     );
     
     if (!logits) {
