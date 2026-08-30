@@ -397,6 +397,10 @@ add_library(dflash_common STATIC
     src/deepseek4/deepseek4_target_shard_ipc_daemon.cpp
     src/deepseek4/deepseek4_dspark.cpp
     src/deepseek4/deepseek4_dspark_spec.cpp
+    # GLM-5.3-Flash (GLM5-Next) target arch
+    src/glm5next/glm5next_loader.cpp
+    src/glm5next/glm5next_graph.cpp
+    src/glm5next/glm5next_backend.cpp
     src/flashprefill_q8.cpp
     src/kv_cache.cpp
     src/kv_quant.cpp

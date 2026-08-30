@@ -13,6 +13,7 @@
 #include "gemma4_layer_split_adapter.h"
 #include "deepseek4_backend.h"
 #include "deepseek4_layer_split_adapter.h"
+#include "glm5next_backend.h"
 #include "layer_split_backend.h"
 #include "qwen35_layer_split_adapter.h"
 
@@ -443,6 +444,23 @@ std::unique_ptr<ModelBackend> create_backend(
         auto backend = std::make_unique<LayerSplitBackend>(std::move(adapter));
         if (!backend->init()) {
             std::fprintf(stderr, "[backend_factory] LayerSplitBackend(deepseek4) init failed\n");
+            return nullptr;
+        }
+        return backend;
+
+    } else if (arch == "glm5next" || arch == "glm5-next") {
+        // GLM-5.3-Flash: 45 layers (34 KDA + 11 MLA/DSA), mHC, 288 experts top-8
+        // Dense FFN on layers 0-2, MoE from layer 3
+        // Alias "glm5-next" for PR #27773 GGUFs
+        Glm5NextBackendConfig cfg;
+        cfg.target_path = args.model_path;
+        cfg.device      = args.device;
+        cfg.chunk       = args.chunk;
+        cfg.max_ctx     = args.device.max_ctx;
+
+        auto backend = std::make_unique<Glm5NextBackend>(cfg);
+        if (!backend->init()) {
+            std::fprintf(stderr, "[backend_factory] Glm5NextBackend init failed\n");
             return nullptr;
         }
         return backend;
