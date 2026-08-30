@@ -11,6 +11,10 @@
 #include <cstdio>
 #include <cstring>
 
+// ROCmFP mix qtype unregister functions (qtype-105/106)
+extern "C" void ggml_cuda_rocmfp2_mix_unregister(const void * base);
+extern "C" void ggml_cuda_rocmfp3_mix_unregister(const void * base);
+
 namespace dflash::common {
 
 Glm5NextBackend::Glm5NextBackend(const Glm5NextBackendConfig & cfg)
@@ -268,7 +272,7 @@ GenerateResult Glm5NextBackend::generate_impl(
     GenerateResult result;
     
     if (req.prompt.empty()) {
-        result.fail(GenerateErrorCode::InvalidInput, "empty prompt");
+        result.fail(GenerateErrorCode::BackendSpecific, "empty prompt");
         return result;
     }
     
@@ -304,7 +308,7 @@ GenerateResult Glm5NextBackend::generate_impl(
     
     ggml_context * ctx = ggml_init(params);
     if (!ctx) {
-        result.fail(GenerateErrorCode::BackendError, "failed to create graph context");
+        result.fail(GenerateErrorCode::PrefillFailed, "failed to create graph context");
         return result;
     }
     
@@ -320,7 +324,7 @@ GenerateResult Glm5NextBackend::generate_impl(
     
     if (!logits) {
         ggml_free(ctx);
-        result.fail(GenerateErrorCode::BackendError, "prefill graph construction failed");
+        result.fail(GenerateErrorCode::PrefillFailed, "prefill graph construction failed");
         return result;
     }
     
@@ -329,7 +333,7 @@ GenerateResult Glm5NextBackend::generate_impl(
     // Compute prefill
     if (ggml_backend_graph_compute(backend_, gf) != GGML_STATUS_SUCCESS) {
         ggml_free(ctx);
-        result.fail(GenerateErrorCode::BackendError, "prefill compute failed");
+        result.fail(GenerateErrorCode::PrefillFailed, "prefill compute failed");
         return result;
     }
     
@@ -383,7 +387,7 @@ GenerateResult Glm5NextBackend::generate_impl(
         // Compute next token logits
         ctx = ggml_init(params);
         if (!ctx) {
-            result.fail(GenerateErrorCode::BackendError, "failed to create decode graph context");
+            result.fail(GenerateErrorCode::DecodeFailed, "failed to create decode graph context");
             break;
         }
         
@@ -397,7 +401,7 @@ GenerateResult Glm5NextBackend::generate_impl(
         
         if (!logits) {
             ggml_free(ctx);
-            result.fail(GenerateErrorCode::BackendError, "decode graph construction failed");
+            result.fail(GenerateErrorCode::DecodeFailed, "decode graph construction failed");
             break;
         }
         
@@ -405,7 +409,7 @@ GenerateResult Glm5NextBackend::generate_impl(
         
         if (ggml_backend_graph_compute(backend_, gf) != GGML_STATUS_SUCCESS) {
             ggml_free(ctx);
-            result.fail(GenerateErrorCode::BackendError, "decode compute failed");
+            result.fail(GenerateErrorCode::DecodeFailed, "decode compute failed");
             break;
         }
         
@@ -450,7 +454,7 @@ GenerateResult Glm5NextBackend::restore_and_generate_impl(
     const GenerateRequest & req,
     const DaemonIO & io) {
     GenerateResult result;
-    result.fail(GenerateErrorCode::NotSupported, "glm5next snapshot restore not implemented");
+    result.fail(GenerateErrorCode::BackendSpecific, "glm5next snapshot restore not implemented");
     return result;
 }
 
@@ -465,9 +469,6 @@ void Glm5NextBackend::free_drafter() {
 void Glm5NextBackend::shutdown() {
     // Unregister ROCmFP mix qtypes (105/106) before freeing backend
     // Must be called while GPU buffer is still valid
-    extern "C" void ggml_cuda_rocmfp2_mix_unregister(const void * base);
-    extern "C" void ggml_cuda_rocmfp3_mix_unregister(const void * base);
-    
     for (const void * base : registered_mix_bases_) {
         // Determine qtype from registered tensor to call correct unregister
         // For now, try both (idempotent if not registered)
@@ -494,7 +495,7 @@ GenerateResult Glm5NextBackend::generate_from_state(
     const DaemonIO & io,
     int kv_offset) {
     GenerateResult result;
-    result.fail(GenerateErrorCode::NotSupported, "glm5next generate_from_state not implemented");
+    result.fail(GenerateErrorCode::BackendSpecific, "glm5next generate_from_state not implemented");
     return result;
 }
 
