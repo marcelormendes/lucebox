@@ -184,4 +184,13 @@ bool glm5next_load_weights(const char * model_path,
                            ggml_context * ctx,
                            std::vector<const void *> & registered_mix_bases);
 
+// Graph builder - constructs forward pass computation graph
+ggml_tensor * glm5next_build_graph(
+    ggml_context * ctx,
+    const Glm5NextWeights & w,
+    Glm5NextCache & cache,
+    const int32_t * tokens,
+    int n_tokens,
+    int kv_pos);
+
 }  // namespace dflash::common
