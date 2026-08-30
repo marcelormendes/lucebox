@@ -283,13 +283,17 @@ GenerateResult Glm5NextBackend::generate_impl(
     
     std::fprintf(stderr, "[glm5next] graph computed successfully\n");
     
+    // Update cache position after successful decode
+    cache_.cur_pos += 1;
+    cache_.n_past += 1;
+    
     // Sample (simplified: just return EOS)
     const int32_t eos_token = 2;  // Typical EOS
     io.emit(eos_token);
     io.emit(-1);  // Sentinel
     
     result.n_gen = 1;
-    result.n_past = 1;
+    result.n_past = cache_.n_past;
     
     ggml_free(ctx);
     return result;

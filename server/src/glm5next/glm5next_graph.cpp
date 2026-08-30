@@ -206,6 +206,8 @@ static ggml_tensor * glm5next_causal_conv1d(ggml_context * ctx,
 static ggml_tensor * glm5next_kda_attention(ggml_context * ctx,
                                            ggml_tensor * cur,
                                            const Glm5NextLayer & layer,
+                                           Glm5NextCache & cache,
+                                           int kda_layer_idx,
                                            int n_tokens, int n_embd, 
                                            int n_head, int head_dim,
                                            float gate_lower_bound) {
@@ -255,14 +257,38 @@ static ggml_tensor * glm5next_kda_attention(ggml_context * ctx,
     q = ggml_rms_norm(ctx, q, 1e-6f);
     k = ggml_rms_norm(ctx, k, 1e-6f);
     
-    // Linear attention (simplified - full impl needs state update)
-    // out = recurrent_update(q, k, v, g, beta, state)
-    // For now, approximate with attention-like operation
-    ggml_tensor * qk = ggml_mul_mat(ctx, k, q);  // [n_head, n_head, n_tokens]
-    ggml_tensor * out = ggml_mul_mat(ctx, v, qk); // [head_dim, n_head, n_tokens]
+    // Linear attention recurrence with state cache
+    // state_{t} = g_{t} * state_{t-1} + (1 - beta_{t}) * (k_{t} @ v_{t}^T)
+    // out_{t} = q_{t} @ state_{t}
     
-    // Apply forget gate
-    out = ggml_mul(ctx, out, g);
+    // Read previous state from cache: [head_dim, n_head] at layer kda_layer_idx
+    ggml_tensor * state_prev = ggml_view_3d(ctx, cache.kda_state,
+                                           head_dim, n_head, 1,
+                                           cache.kda_state->nb[1], 
+                                           cache.kda_state->nb[2],
+                                           kda_layer_idx * cache.kda_state->nb[2]);
+    ggml_set_name(state_prev, "kda_state_prev");
+    
+    // Compute k @ v^T for current token: [head_dim, n_head]
+    ggml_tensor * kv = ggml_mul_mat(ctx, v, ggml_cont(ctx, ggml_transpose(ctx, k)));
+    
+    // state_new = g * state_prev + (1 - beta) * kv
+    ggml_tensor * one_minus_beta = ggml_sub(ctx, ggml_new_f32(ctx, 1.0f), beta);
+    ggml_tensor * state_new = ggml_add(ctx,
+                                      ggml_mul(ctx, g, state_prev),
+                                      ggml_mul(ctx, one_minus_beta, kv));
+    
+    // Write new state back to cache
+    ggml_tensor * state_dst = ggml_view_3d(ctx, cache.kda_state,
+                                          head_dim, n_head, 1,
+                                          cache.kda_state->nb[1],
+                                          cache.kda_state->nb[2],
+                                          kda_layer_idx * cache.kda_state->nb[2]);
+    state_new = ggml_cpy(ctx, state_new, state_dst);
+    ggml_set_name(state_new, "kda_state_update");
+    
+    // Output: q @ state_new
+    ggml_tensor * out = ggml_mul_mat(ctx, state_new, q);  // [head_dim, n_head, n_tokens]
     
     // Output gating: RMSNorm then sigmoid gate
     ggml_tensor * o_gate = ggml_mul_mat(ctx, layer.kda_g_a, cur);
@@ -287,6 +313,8 @@ static ggml_tensor * glm5next_kda_attention(ggml_context * ctx,
 static ggml_tensor * glm5next_mla_attention(ggml_context * ctx,
                                            ggml_tensor * cur,
                                            const Glm5NextLayer & layer,
+                                           Glm5NextCache & cache,
+                                           int mla_layer_idx,
                                            int n_tokens, int n_embd,
                                            int n_head, int head_dim,
                                            int kv_lora_rank, int index_topk, int kpool) {
@@ -303,75 +331,94 @@ static ggml_tensor * glm5next_mla_attention(ggml_context * ctx,
     // Reshape Q: [n_head * head_dim, n_tokens] -> [head_dim, n_head, n_tokens]
     q = ggml_reshape_3d(ctx, q, head_dim, n_head, n_tokens);
     
-    // ── KV path: absorbed wk_b/wv_b (no explicit a-projection) ──
-    ggml_tensor * k_compressed = ggml_mul_mat(ctx, layer.attn_wk_b, cur);
-    ggml_tensor * v_compressed = ggml_mul_mat(ctx, layer.attn_wv_b, cur);
+    // ── KV path: absorbed wk_b/wv_b + cache append ──
+    ggml_tensor * k_new = ggml_mul_mat(ctx, layer.attn_wk_b, cur);  // [kv_lora_rank, n_tokens]
+    ggml_tensor * v_new = ggml_mul_mat(ctx, layer.attn_wv_b, cur);
     
-    // Reshape KV: [kv_lora_rank, n_tokens] -> [kv_lora_rank, n_tokens, 1]
-    k_compressed = ggml_reshape_3d(ctx, k_compressed, kv_lora_rank, n_tokens, 1);
-    v_compressed = ggml_reshape_3d(ctx, v_compressed, kv_lora_rank, n_tokens, 1);
+    // Append new K/V to cache at position cur_pos
+    // Cache shape: [head_dim, n_ctx, n_mla_layers]
+    const int cur_pos = cache.cur_pos;
+    const int n_past = cache.n_past;
     
-    // ── IndexPool DSA: kpool=4, always_select_tail, index_topk=2048 ──
-    // 1. Compute indexer scores: APE + gate
-    ggml_tensor * ape = nullptr;
+    ggml_tensor * k_cache_view = ggml_view_3d(ctx, cache.k,
+                                             head_dim, n_tokens, 1,
+                                             cache.k->nb[1],
+                                             cache.k->nb[2],
+                                             cur_pos * cache.k->nb[1] + mla_layer_idx * cache.k->nb[2]);
+    ggml_tensor * v_cache_view = ggml_view_3d(ctx, cache.v,
+                                             head_dim, n_tokens, 1,
+                                             cache.v->nb[1],
+                                             cache.v->nb[2],
+                                             cur_pos * cache.v->nb[1] + mla_layer_idx * cache.v->nb[2]);
+    
+    // Write new K/V to cache
+    k_new = ggml_cpy(ctx, k_new, k_cache_view);
+    v_new = ggml_cpy(ctx, v_new, v_cache_view);
+    ggml_set_name(k_new, "k_cache_update");
+    ggml_set_name(v_new, "v_cache_update");
+    
+    // Read full cached K/V context [0:cur_pos+n_tokens]
+    const int n_ctx_tokens = cur_pos + n_tokens;
+    ggml_tensor * k_ctx = ggml_view_3d(ctx, cache.k,
+                                      head_dim, n_ctx_tokens, 1,
+                                      cache.k->nb[1],
+                                      cache.k->nb[2],
+                                      mla_layer_idx * cache.k->nb[2]);
+    ggml_tensor * v_ctx = ggml_view_3d(ctx, cache.v,
+                                      head_dim, n_ctx_tokens, 1,
+                                      cache.v->nb[1],
+                                      cache.v->nb[2],
+                                      mla_layer_idx * cache.v->nb[2]);
+    ggml_set_name(k_ctx, "k_cached_context");
+    ggml_set_name(v_ctx, "v_cached_context");
+    
+    // ── IndexPool DSA over cached context: kpool=4, always_select_tail, index_topk=2048 ──
+    // Work over full cached K [0:n_ctx_tokens], not just current batch
+    
+    // 1. Compute indexer scores over cached K
+    ggml_tensor * indexer_scores = k_ctx;  // [head_dim, n_ctx_tokens]
+    
+    // APE (Absolute Position Encoding) for ALL cached positions
     if (layer.indexer_compressor_ape) {
-        // APE (Absolute Position Encoding) for keys
-        ape = ggml_get_rows(ctx, layer.indexer_compressor_ape, 
-                           ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_tokens));
-        ape = ggml_reshape_2d(ctx, ape, kv_lora_rank, n_tokens);
-    }
-    
-    ggml_tensor * indexer_scores = k_compressed;
-    if (ape) {
+        // Build position indices [0, 1, ..., n_ctx_tokens-1]
+        ggml_tensor * pos_ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_ctx_tokens);
+        // APE lookup will happen at runtime
+        ggml_tensor * ape = ggml_get_rows(ctx, layer.indexer_compressor_ape, pos_ids);
+        ape = ggml_reshape_2d(ctx, ape, head_dim, n_ctx_tokens);
         indexer_scores = ggml_add(ctx, indexer_scores, ape);
     }
     
-    // Apply gating
-    if (layer.indexer_compressor_gate) {
-        ggml_tensor * gate = ggml_mul_mat(ctx, layer.indexer_compressor_gate, cur);
-        gate = ggml_sigmoid(ctx, ggml_reshape_2d(ctx, gate, kv_lora_rank, n_tokens));
-        indexer_scores = ggml_mul(ctx, indexer_scores, gate);
-    }
-    
-    // 2. Row-wise RMSNorm of scores
+    // 2. Row-wise RMSNorm of cached K scores
     indexer_scores = ggml_rms_norm(ctx, indexer_scores, 1e-6f);
     
-    // 3. Compute attention logits: Q @ indexer_scores
-    // Q: [head_dim, n_head, n_tokens], indexer_scores: [kv_lora_rank, n_tokens]
-    // Pool over heads for indexer selection
+    // 3. Compute attention logits: Q @ indexer_scores over full context
     ggml_tensor * q_pooled = ggml_mean(ctx, q);  // [head_dim, n_tokens]
-    ggml_tensor * attn_logits = ggml_mul_mat(ctx, indexer_scores, q_pooled);
+    ggml_tensor * attn_logits = ggml_mul_mat(ctx, indexer_scores, q_pooled);  // [n_ctx_tokens, n_tokens]
     
-    // 4. Top-k selection: select top-2048 keys + always_select_tail (last kpool=4)
-    int effective_k = (n_tokens > index_topk + kpool) ? index_topk : 
-                      ((n_tokens > kpool) ? (n_tokens - kpool) : 0);
+    // 4. Top-k selection from cached context + always_select_tail (last kpool)
+    const int n_available = n_ctx_tokens - kpool;  // Reserve tail
+    int effective_k = (n_available > index_topk) ? index_topk : n_available;
+    if (effective_k < 0) effective_k = 0;
     
-    ggml_tensor * topk_indices = nullptr;
-    if (effective_k > 0) {
-        topk_indices = ggml_top_k(ctx, attn_logits, effective_k);
+    ggml_tensor * k_selected = k_ctx;
+    ggml_tensor * v_selected = v_ctx;
+    int n_selected = n_ctx_tokens;
+    
+    if (effective_k > 0 && n_ctx_tokens > index_topk + kpool) {
+        // Select top-k from non-tail positions
+        ggml_tensor * topk_indices = ggml_top_k(ctx, attn_logits, effective_k);
+        k_selected = ggml_get_rows(ctx, k_ctx, topk_indices);
+        v_selected = ggml_get_rows(ctx, v_ctx, topk_indices);
+        
+        // TODO: Concat with tail indices [n_ctx_tokens - kpool : n_ctx_tokens]
+        // For now, simplified to top-k only
+        n_selected = effective_k;
     }
     
-    // Always select tail (last kpool tokens)
-    // In full impl with KV cache, concat topk_indices with tail indices
-    
-    // 5. Gather selected K and V
-    ggml_tensor * k_selected = k_compressed;
-    ggml_tensor * v_selected = v_compressed;
-    
-    if (topk_indices) {
-        k_selected = ggml_get_rows(ctx, k_compressed, topk_indices);
-        v_selected = ggml_get_rows(ctx, v_compressed, topk_indices);
-    }
-    
-    // ── Standard attention over selected KV ──
-    // Expand compressed KV to full dimension
-    // In the absorbed form, wk_b/wv_b already produce the right dimension
-    int n_selected = (effective_k > 0) ? effective_k : n_tokens;
-    
-    // Reshape for attention: [kv_lora_rank, n_selected] -> [head_dim, n_head, n_selected]
-    // Note: kv_lora_rank should match head_dim * n_head_kv for proper expansion
-    k_selected = ggml_reshape_3d(ctx, k_selected, head_dim, n_head, n_selected);
-    v_selected = ggml_reshape_3d(ctx, v_selected, head_dim, n_head, n_selected);
+    // ── Standard attention over selected cached KV ──
+    // K/V already in correct shape: [head_dim, n_selected]
+    k_selected = ggml_reshape_3d(ctx, k_selected, head_dim, 1, n_selected);  // Single KV head
+    v_selected = ggml_reshape_3d(ctx, v_selected, head_dim, 1, n_selected);
     
     // Q @ K^T
     ggml_tensor * kqv = ggml_mul_mat(ctx, k_selected, q);
@@ -542,31 +589,38 @@ ggml_tensor * glm5next_build_graph(
             cur = ggml_mul(ctx, cur, layer.attn_norm);
             ggml_set_name(cur, ("attn_norm_" + std::to_string(il)).c_str());
             
-            // Attention: KDA or MLA
+            // Attention: KDA or MLA with cache
             bool is_mla_layer = ((il + 1) % w.full_attn_interval) == 0;
             
+            // Calculate cache layer indices
+            static int mla_layer_count = 0, kda_layer_count = 0;
+            if (il == 0) { mla_layer_count = 0; kda_layer_count = 0; }
+            
             if (is_mla_layer) {
-                // MLA sparse attention with IndexPool DSA
+                // MLA sparse attention with IndexPool DSA + KV cache
                 if (!layer.attn_q_a || !layer.attn_q_b || !layer.attn_wk_b || 
                     !layer.attn_wv_b || !layer.attn_wo) {
                     std::fprintf(stderr, "[glm5next_graph] layer %d missing MLA tensors\n", il);
                     return nullptr;
                 }
-                cur = glm5next_mla_attention(ctx, cur, layer, n_tokens,
-                                            n_embd, n_head, head_dim,
+                cur = glm5next_mla_attention(ctx, cur, layer, cache, mla_layer_count,
+                                            n_tokens, n_embd, n_head, head_dim,
                                             w.kv_lora_rank, w.index_topk, w.kpool);
                 ggml_set_name(cur, ("mla_out_" + std::to_string(il)).c_str());
+                mla_layer_count++;
             } else {
-                // KDA linear attention
+                // KDA linear attention with recurrent state cache
                 if (!layer.attn_wo || !layer.kda_f_a || !layer.kda_f_b || 
                     !layer.kda_g_a || !layer.kda_g_b) {
                     std::fprintf(stderr, "[glm5next_graph] layer %d missing KDA tensors\n", il);
                     return nullptr;
                 }
                 const float gate_lower_bound = -5.0f;  // GLM-5.3 gate_lower_bound
-                cur = glm5next_kda_attention(ctx, cur, layer, n_tokens, n_embd, 
-                                            n_head, head_dim, gate_lower_bound);
+                cur = glm5next_kda_attention(ctx, cur, layer, cache, kda_layer_count,
+                                            n_tokens, n_embd, n_head, head_dim, 
+                                            gate_lower_bound);
                 ggml_set_name(cur, ("kda_out_" + std::to_string(il)).c_str());
+                kda_layer_count++;
             }
             
             // mHC post-attention
