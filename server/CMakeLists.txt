@@ -364,6 +364,7 @@ set(DFLASH27B_SRC_INCLUDE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/qwen3
     ${CMAKE_CURRENT_SOURCE_DIR}/src/gemma4
     ${CMAKE_CURRENT_SOURCE_DIR}/src/deepseek4
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/glm5next
     ${CMAKE_CURRENT_SOURCE_DIR}/src/server
 )
 
