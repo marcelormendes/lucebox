@@ -266,11 +266,9 @@ GenerateResult Glm5NextBackend::generate_impl(
                  req.prompt.size(), req.n_gen);
     
     GenerateResult result;
-    result.status = GenerateStatus::OK;
     
     if (req.prompt.empty()) {
-        result.status = GenerateStatus::Error;
-        result.error_message = "empty prompt";
+        result.fail(GenerateErrorCode::InvalidInput, "empty prompt");
         return result;
     }
     
@@ -306,8 +304,7 @@ GenerateResult Glm5NextBackend::generate_impl(
     
     ggml_context * ctx = ggml_init(params);
     if (!ctx) {
-        result.status = GenerateStatus::Error;
-        result.error_message = "failed to create graph context";
+        result.fail(GenerateErrorCode::BackendError, "failed to create graph context");
         return result;
     }
     
@@ -323,8 +320,7 @@ GenerateResult Glm5NextBackend::generate_impl(
     
     if (!logits) {
         ggml_free(ctx);
-        result.status = GenerateStatus::Error;
-        result.error_message = "prefill graph construction failed";
+        result.fail(GenerateErrorCode::BackendError, "prefill graph construction failed");
         return result;
     }
     
@@ -333,8 +329,7 @@ GenerateResult Glm5NextBackend::generate_impl(
     // Compute prefill
     if (ggml_backend_graph_compute(backend_, gf) != GGML_STATUS_SUCCESS) {
         ggml_free(ctx);
-        result.status = GenerateStatus::Error;
-        result.error_message = "prefill compute failed";
+        result.fail(GenerateErrorCode::BackendError, "prefill compute failed");
         return result;
     }
     
@@ -388,8 +383,7 @@ GenerateResult Glm5NextBackend::generate_impl(
         // Compute next token logits
         ctx = ggml_init(params);
         if (!ctx) {
-            result.status = GenerateStatus::Error;
-            result.error_message = "failed to create decode graph context";
+            result.fail(GenerateErrorCode::BackendError, "failed to create decode graph context");
             break;
         }
         
@@ -403,8 +397,7 @@ GenerateResult Glm5NextBackend::generate_impl(
         
         if (!logits) {
             ggml_free(ctx);
-            result.status = GenerateStatus::Error;
-            result.error_message = "decode graph construction failed";
+            result.fail(GenerateErrorCode::BackendError, "decode graph construction failed");
             break;
         }
         
@@ -412,8 +405,7 @@ GenerateResult Glm5NextBackend::generate_impl(
         
         if (ggml_backend_graph_compute(backend_, gf) != GGML_STATUS_SUCCESS) {
             ggml_free(ctx);
-            result.status = GenerateStatus::Error;
-            result.error_message = "decode compute failed";
+            result.fail(GenerateErrorCode::BackendError, "decode compute failed");
             break;
         }
         
@@ -432,8 +424,8 @@ GenerateResult Glm5NextBackend::generate_impl(
     // Emit sentinel
     io.emit(-1);
     
-    result.n_gen = (int)out_tokens.size();
-    result.n_past = cache_.n_past;
+    result.tokens = std::move(out_tokens);
+    result.succeed();
     return result;
 }
 
@@ -458,8 +450,7 @@ GenerateResult Glm5NextBackend::restore_and_generate_impl(
     const GenerateRequest & req,
     const DaemonIO & io) {
     GenerateResult result;
-    result.status = GenerateStatus::Error;
-    result.error_message = "glm5next snapshot restore not implemented";
+    result.fail(GenerateErrorCode::NotSupported, "glm5next snapshot restore not implemented");
     return result;
 }
 
@@ -503,8 +494,7 @@ GenerateResult Glm5NextBackend::generate_from_state(
     const DaemonIO & io,
     int kv_offset) {
     GenerateResult result;
-    result.status = GenerateStatus::Error;
-    result.error_message = "glm5next generate_from_state not implemented";
+    result.fail(GenerateErrorCode::NotSupported, "glm5next generate_from_state not implemented");
     return result;
 }
 

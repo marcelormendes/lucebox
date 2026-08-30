@@ -9,6 +9,7 @@
 
 #include "ggml.h"
 #include "ggml-backend.h"
+#include "ggml-cpu.h"
 
 #include <cstdio>
 #include <cmath>
@@ -553,7 +554,8 @@ ggml_tensor * glm5next_build_graph(
     // Initialize mHC state: [n_embd, hc, n_tokens]
     // Replicate input across all HC streams
     ggml_tensor * hc_state = ggml_reshape_3d(ctx, inpL, n_embd, 1, n_tokens);
-    hc_state = ggml_repeat(ctx, hc_state, n_embd, n_hc, n_tokens, 1);
+    ggml_tensor * hc_shape = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n_embd, n_hc, n_tokens);
+    hc_state = ggml_repeat(ctx, hc_state, hc_shape);
     ggml_set_name(hc_state, "hc_init");
 
     // Cache layer index counters (local, not static)
@@ -605,7 +607,7 @@ ggml_tensor * glm5next_build_graph(
                 }
                 cur = glm5next_mla_attention(ctx, cur, layer, cache, mla_layer_idx,
                                             n_tokens, n_embd, n_head, head_dim,
-                                            w.kv_lora_rank, w.index_topk, w.kpool);
+                                            head_dim, w.index_topk, w.kpool);
                 ggml_set_name(cur, ("mla_out_" + std::to_string(il)).c_str());
                 mla_layer_idx++;
             } else {
@@ -632,7 +634,8 @@ ggml_tensor * glm5next_build_graph(
                                                          residual->nb[2], 0);
                 first_stream = ggml_add(ctx, first_stream, cur);
                 hc_state = ggml_reshape_3d(ctx, first_stream, n_embd, 1, n_tokens);
-                hc_state = ggml_repeat(ctx, hc_state, n_embd, n_hc, n_tokens, 1);
+                ggml_tensor * hc_shape = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n_embd, n_hc, n_tokens);
+                hc_state = ggml_repeat(ctx, hc_state, hc_shape);
             }
             ggml_set_name(hc_state, ("hc_attn_post_" + std::to_string(il)).c_str());
         }
@@ -722,7 +725,8 @@ ggml_tensor * glm5next_build_graph(
                                                          residual->nb[2], 0);
                 first_stream = ggml_add(ctx, first_stream, cur);
                 hc_state = ggml_reshape_3d(ctx, first_stream, n_embd, 1, n_tokens);
-                hc_state = ggml_repeat(ctx, hc_state, n_embd, n_hc, n_tokens, 1);
+                ggml_tensor * hc_shape = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n_embd, n_hc, n_tokens);
+                hc_state = ggml_repeat(ctx, hc_state, hc_shape);
             }
             ggml_set_name(hc_state, ("l_out_" + std::to_string(il)).c_str());
         }
