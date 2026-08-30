@@ -620,25 +620,28 @@ bool glm5next_load_weights(const char * model_path,
     // Missing tables MUST fail the load (no silent fallback to uniform)
     std::vector<const void *> p4mix_bases, gumix_bases;
     
-    if (!glm5next_register_p4mix_sidecar(model_path, w, p4mix_bases)) {
-        std::fprintf(stderr, "[glm5next_loader] P4MIX registration failed\n");
-        return false;
+    // ROCmFP mix qtype (105/106) registration - OPTIONAL
+    // If sidecars are present and tensors use qtypes 105/106, register them.
+    // If sidecars are missing, that's OK - GGUF can use stock qtypes (Q2_K, Q8_0, etc.)
+    bool p4mix_ok = glm5next_register_p4mix_sidecar(model_path, w, p4mix_bases);
+    if (!p4mix_ok) {
+        std::fprintf(stderr, "[glm5next_loader] P4MIX registration skipped (sidecar missing, will use stock qtypes)\n");
     }
     
-    if (!glm5next_register_gumix_sidecar(model_path, w, gumix_bases)) {
-        std::fprintf(stderr, "[glm5next_loader] GUMIX registration failed\n");
-        // Unregister P4MIX on failure
-        for (const void * base : p4mix_bases) {
-            ggml_cuda_rocmfp3_mix_unregister(base);
-        }
-        return false;
+    bool gumix_ok = glm5next_register_gumix_sidecar(model_path, w, gumix_bases);
+    if (!gumix_ok) {
+        std::fprintf(stderr, "[glm5next_loader] GUMIX registration skipped (sidecar missing, will use stock qtypes)\n");
     }
     
-    // Merge registered bases for cleanup tracking
-    registered_mix_bases.insert(registered_mix_bases.end(),
-                                p4mix_bases.begin(), p4mix_bases.end());
-    registered_mix_bases.insert(registered_mix_bases.end(),
-                                gumix_bases.begin(), gumix_bases.end());
+    // Merge registered bases for cleanup tracking (if any were registered)
+    if (p4mix_ok) {
+        registered_mix_bases.insert(registered_mix_bases.end(),
+                                    p4mix_bases.begin(), p4mix_bases.end());
+    }
+    if (gumix_ok) {
+        registered_mix_bases.insert(registered_mix_bases.end(),
+                                    gumix_bases.begin(), gumix_bases.end());
+    }
     
     return true;
 }
