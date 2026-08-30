@@ -107,10 +107,9 @@ bool Glm5NextBackend::init_hybrid_model() {
     ggml_set_name(cache_.k, "cache_k");
     ggml_set_name(cache_.v, "cache_v");
     
-    // KDA recurrent state: [n_embd, n_head, n_kda_layers] (hidden state per head)
-    const int kda_state_dim = w_.n_embd;
+    // KDA recurrent state: [head_dim, n_head, n_kda_layers] (hidden state per head)
     cache_.kda_state = ggml_new_tensor_3d(cache_ctx, GGML_TYPE_F32, 
-                                          kda_state_dim, w_.n_head, n_kda_layers);
+                                          w_.head_dim, w_.n_head, n_kda_layers);
     ggml_set_name(cache_.kda_state, "kda_state");
     
     // Allocate cache on backend

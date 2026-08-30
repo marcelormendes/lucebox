@@ -556,6 +556,10 @@ ggml_tensor * glm5next_build_graph(
     hc_state = ggml_repeat(ctx, hc_state, n_embd, n_hc, n_tokens, 1);
     ggml_set_name(hc_state, "hc_init");
 
+    // Cache layer index counters (local, not static)
+    int mla_layer_idx = 0;
+    int kda_layer_idx = 0;
+
     // Process all 45 layers
     for (int il = 0; il < w.n_layer; ++il) {
         const auto & layer = w.layers[il];
@@ -592,10 +596,6 @@ ggml_tensor * glm5next_build_graph(
             // Attention: KDA or MLA with cache
             bool is_mla_layer = ((il + 1) % w.full_attn_interval) == 0;
             
-            // Calculate cache layer indices
-            static int mla_layer_count = 0, kda_layer_count = 0;
-            if (il == 0) { mla_layer_count = 0; kda_layer_count = 0; }
-            
             if (is_mla_layer) {
                 // MLA sparse attention with IndexPool DSA + KV cache
                 if (!layer.attn_q_a || !layer.attn_q_b || !layer.attn_wk_b || 
@@ -603,11 +603,11 @@ ggml_tensor * glm5next_build_graph(
                     std::fprintf(stderr, "[glm5next_graph] layer %d missing MLA tensors\n", il);
                     return nullptr;
                 }
-                cur = glm5next_mla_attention(ctx, cur, layer, cache, mla_layer_count,
+                cur = glm5next_mla_attention(ctx, cur, layer, cache, mla_layer_idx,
                                             n_tokens, n_embd, n_head, head_dim,
                                             w.kv_lora_rank, w.index_topk, w.kpool);
                 ggml_set_name(cur, ("mla_out_" + std::to_string(il)).c_str());
-                mla_layer_count++;
+                mla_layer_idx++;
             } else {
                 // KDA linear attention with recurrent state cache
                 if (!layer.attn_wo || !layer.kda_f_a || !layer.kda_f_b || 
@@ -616,11 +616,11 @@ ggml_tensor * glm5next_build_graph(
                     return nullptr;
                 }
                 const float gate_lower_bound = -5.0f;  // GLM-5.3 gate_lower_bound
-                cur = glm5next_kda_attention(ctx, cur, layer, cache, kda_layer_count,
+                cur = glm5next_kda_attention(ctx, cur, layer, cache, kda_layer_idx,
                                             n_tokens, n_embd, n_head, head_dim, 
                                             gate_lower_bound);
                 ggml_set_name(cur, ("kda_out_" + std::to_string(il)).c_str());
-                kda_layer_count++;
+                kda_layer_idx++;
             }
             
             // mHC post-attention
