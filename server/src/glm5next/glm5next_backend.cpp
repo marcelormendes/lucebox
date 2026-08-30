@@ -128,16 +128,40 @@ bool Glm5NextBackend::init_hybrid_model() {
     std::fprintf(stderr, "[glm5next] cache allocated: %d MLA layers, %d KDA layers, ctx=%d\n",
                  n_mla_layers, n_kda_layers, cache_.n_ctx);
     
-    // Build MoE hybrid storage for expert evaluation (all-hot, GPU-only)
+    // Build MoE hybrid storage for expert evaluation
+    // Dual-GPU: experts on device 1 (gfx1151), hot path on device 0 (gfx1100)
     const int n_moe_layers = w_.n_layer - w_.first_moe_layer;
     if (n_moe_layers > 0) {
-        // Create all-hot placement: all 288 experts on GPU
+        // Check for dual-GPU setup: device 1 for experts
+        const int expert_gpu = 1;  // gfx1151 UMA
+        ggml_backend_t expert_backend = nullptr;
+        bool dual_gpu = false;
+        
+        // Try to initialize expert backend on device 1
+        expert_backend = ggml_backend_cuda_init(expert_gpu);
+        if (expert_backend) {
+            dual_gpu = true;
+            std::fprintf(stderr, "[glm5next] dual-GPU: device 0 (hot path), device 1 (experts)\n");
+        } else {
+            std::fprintf(stderr, "[glm5next] device 1 unavailable, using single-GPU all-hot\n");
+        }
+        
+        // Placement: all experts on "cold" backend (device 1) if dual-GPU, else all-hot
         moe_placement_.n_expert = w_.n_expert;
         moe_placement_.hot_expert_ids.resize(n_moe_layers);
-        for (int il = 0; il < n_moe_layers; ++il) {
-            moe_placement_.hot_expert_ids[il].resize(w_.n_expert);
-            for (int e = 0; e < w_.n_expert; ++e) {
-                moe_placement_.hot_expert_ids[il][e] = e;  // All hot
+        
+        if (dual_gpu) {
+            // Dual-GPU: all experts on device 1 (cold backend), none on device 0 (hot)
+            for (int il = 0; il < n_moe_layers; ++il) {
+                moe_placement_.hot_expert_ids[il].clear();  // No experts on device 0
+            }
+        } else {
+            // Single-GPU fallback: all experts on device 0 (hot)
+            for (int il = 0; il < n_moe_layers; ++il) {
+                moe_placement_.hot_expert_ids[il].resize(w_.n_expert);
+                for (int e = 0; e < w_.n_expert; ++e) {
+                    moe_placement_.hot_expert_ids[il][e] = e;
+                }
             }
         }
         
@@ -166,20 +190,38 @@ bool Glm5NextBackend::init_hybrid_model() {
         moe_cfg.n_layer = n_moe_layers;
         moe_cfg.first_moe_layer = w_.first_moe_layer;
         moe_cfg.swiglu_clamp = w_.swiglu_clamp;
-        moe_cfg.cold_expert_backend = MoeHybridColdBackend::Cpu;
-        moe_cfg.materialize_hot_experts = true;
-        moe_cfg.materialize_cold_experts = false;  // All on GPU
+        
+        if (dual_gpu) {
+            // Dual-GPU: experts on device 1
+            moe_cfg.cold_expert_backend = MoeHybridColdBackend::Gpu;
+            moe_cfg.materialize_hot_experts = false;  // No hot experts on device 0
+            moe_cfg.materialize_cold_experts = true;  // All experts on device 1
+        } else {
+            // Single-GPU: all experts hot on device 0
+            moe_cfg.cold_expert_backend = MoeHybridColdBackend::Cpu;
+            moe_cfg.materialize_hot_experts = true;
+            moe_cfg.materialize_cold_experts = false;
+        }
         
         moe_hybrid_ = std::make_shared<MoeHybridStorage>();
         std::string err;
         if (!build_moe_hybrid_storage(moe_cfg, backend_, moe_placement_, 
-                                      layer_descs, *moe_hybrid_, &err)) {
+                                      layer_descs, *moe_hybrid_, &err, 
+                                      dual_gpu ? expert_backend : nullptr)) {
             std::fprintf(stderr, "[glm5next] failed to build MoE storage: %s\n", err.c_str());
+            if (dual_gpu && expert_backend) {
+                ggml_backend_free(expert_backend);
+            }
             return false;
         }
         
-        std::fprintf(stderr, "[glm5next] MoE storage initialized: %d layers, %d experts (all GPU)\n",
-                     n_moe_layers, w_.n_expert);
+        if (dual_gpu) {
+            std::fprintf(stderr, "[glm5next] MoE storage: %d layers, %d experts on device 1 (gfx1151)\n",
+                         n_moe_layers, w_.n_expert);
+        } else {
+            std::fprintf(stderr, "[glm5next] MoE storage: %d layers, %d experts on device 0 (all-hot)\n",
+                         n_moe_layers, w_.n_expert);
+        }
     }
     
     std::fprintf(stderr, "[glm5next] backend initialized: ctx=%d\n", cache_.n_ctx);
