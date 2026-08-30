@@ -85,6 +85,50 @@ bool Glm5NextBackend::init_hybrid_model() {
     cache_.cur_pos = 0;
     cache_.n_past = 0;
     
+    // Allocate KV cache tensors for MLA layers and KDA state
+    const int n_mla_layers = (w_.n_layer + w_.full_attn_interval - 1) / w_.full_attn_interval;
+    const int n_kda_layers = w_.n_layer - n_mla_layers;
+    const int kv_dim = w_.head_dim;  // MLA uses single KV head (absorbed form)
+    
+    ggml_init_params cache_params = {
+        /*.mem_size   =*/ 512 * 1024 * 1024,  // 512MB for cache metadata
+        /*.mem_buffer =*/ nullptr,
+        /*.no_alloc   =*/ false,
+    };
+    ggml_context * cache_ctx = ggml_init(cache_params);
+    if (!cache_ctx) {
+        std::fprintf(stderr, "[glm5next] failed to init cache context\n");
+        return false;
+    }
+    
+    // MLA KV cache: [head_dim, n_ctx, n_mla_layers]
+    cache_.k = ggml_new_tensor_3d(cache_ctx, GGML_TYPE_F16, kv_dim, cache_.n_ctx, n_mla_layers);
+    cache_.v = ggml_new_tensor_3d(cache_ctx, GGML_TYPE_F16, kv_dim, cache_.n_ctx, n_mla_layers);
+    ggml_set_name(cache_.k, "cache_k");
+    ggml_set_name(cache_.v, "cache_v");
+    
+    // KDA recurrent state: [n_embd, n_head, n_kda_layers] (hidden state per head)
+    const int kda_state_dim = w_.n_embd;
+    cache_.kda_state = ggml_new_tensor_3d(cache_ctx, GGML_TYPE_F32, 
+                                          kda_state_dim, w_.n_head, n_kda_layers);
+    ggml_set_name(cache_.kda_state, "kda_state");
+    
+    // Allocate cache on backend
+    ggml_backend_buffer_t cache_buf = ggml_backend_alloc_ctx_tensors(cache_ctx, backend_);
+    if (!cache_buf) {
+        std::fprintf(stderr, "[glm5next] failed to allocate cache buffer\n");
+        ggml_free(cache_ctx);
+        return false;
+    }
+    
+    // Zero-initialize caches
+    ggml_backend_tensor_memset(cache_.k, 0, 0, ggml_nbytes(cache_.k));
+    ggml_backend_tensor_memset(cache_.v, 0, 0, ggml_nbytes(cache_.v));
+    ggml_backend_tensor_memset(cache_.kda_state, 0, 0, ggml_nbytes(cache_.kda_state));
+    
+    std::fprintf(stderr, "[glm5next] cache allocated: %d MLA layers, %d KDA layers, ctx=%d\n",
+                 n_mla_layers, n_kda_layers, cache_.n_ctx);
+    
     // Build MoE hybrid storage for expert evaluation (all-hot, GPU-only)
     const int n_moe_layers = w_.n_layer - w_.first_moe_layer;
     if (n_moe_layers > 0) {
