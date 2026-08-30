@@ -268,21 +268,40 @@ GenerateResult Glm5NextBackend::generate_impl(
     GenerateResult result;
     result.status = GenerateStatus::OK;
     
-    // Simplified generation: just build graph for first token and return
-    // Full implementation would do proper prefill, decode loop, and sampling
-    
     if (req.prompt.empty()) {
         result.status = GenerateStatus::Error;
         result.error_message = "empty prompt";
         return result;
     }
     
+    // Setup sampler
+    sampler_ = req.sampler;
+    if (req.do_sample && sampler_.seed != 0) {
+        sampler_rng_.seed(sampler_.seed);
+    }
+    
+    const bool process_logits = sampler_.needs_logit_processing();
+    std::vector<int32_t> history;
+    if (process_logits) {
+        history = req.prompt;
+        if (req.n_gen > 0) {
+            history.reserve(history.size() + (size_t)req.n_gen);
+        }
+    }
+    
+    // Prefill: process prompt tokens
+    const int prompt_len = (int)req.prompt.size();
+    std::vector<int32_t> out_tokens;
+    out_tokens.reserve((size_t)req.n_gen);
+    
+    std::fprintf(stderr, "[glm5next] prefill: %d tokens\n", prompt_len);
+    
     // Allocate graph context
     const size_t graph_ctx_size = 128 * 1024 * 1024;  // 128MB
     ggml_init_params params = {
         /*.mem_size   =*/ graph_ctx_size,
         /*.mem_buffer =*/ nullptr,
-        /*.no_alloc   =*/ true,  // Use backend allocator
+        /*.no_alloc   =*/ true,
     };
     
     ggml_context * ctx = ggml_init(params);
@@ -292,51 +311,129 @@ GenerateResult Glm5NextBackend::generate_impl(
         return result;
     }
     
-    // Build forward graph for first token
+    // Build forward graph for prompt
     ggml_cgraph * gf = ggml_new_graph(ctx);
     
     ggml_tensor * logits = glm5next_build_graph(
         ctx, w_, cache_,
-        req.prompt.data(), 1,  // Just first token for now
+        req.prompt.data(), prompt_len,
         cache_.cur_pos,
-        moe_hybrid_.get()  // Pass MoE storage for expert evaluation
+        moe_hybrid_.get()
     );
     
     if (!logits) {
         ggml_free(ctx);
         result.status = GenerateStatus::Error;
-        result.error_message = "graph construction failed";
+        result.error_message = "prefill graph construction failed";
         return result;
     }
     
     ggml_build_forward_expand(gf, logits);
     
-    std::fprintf(stderr, "[glm5next] graph built: %d nodes, %d leaves\n",
-                 gf->n_nodes, gf->n_leafs);
-    
-    // Compute graph
+    // Compute prefill
     if (ggml_backend_graph_compute(backend_, gf) != GGML_STATUS_SUCCESS) {
         ggml_free(ctx);
         result.status = GenerateStatus::Error;
-        result.error_message = "graph compute failed";
+        result.error_message = "prefill compute failed";
         return result;
     }
     
-    std::fprintf(stderr, "[glm5next] graph computed successfully\n");
+    // Read logits from last token position
+    std::vector<float> logits_vec((size_t)w_.n_vocab);
+    const size_t last_token_offset = (size_t)(prompt_len - 1) * (size_t)w_.n_vocab * sizeof(float);
+    ggml_backend_tensor_get(logits, logits_vec.data(), last_token_offset,
+                            sizeof(float) * (size_t)w_.n_vocab);
     
-    // Update cache position after successful decode
-    cache_.cur_pos += 1;
-    cache_.n_past += 1;
-    
-    // Sample (simplified: just return EOS)
-    const int32_t eos_token = 2;  // Typical EOS
-    io.emit(eos_token);
-    io.emit(-1);  // Sentinel
-    
-    result.n_gen = 1;
-    result.n_past = cache_.n_past;
+    // Update cache position after prefill
+    cache_.cur_pos += prompt_len;
+    cache_.n_past += prompt_len;
     
     ggml_free(ctx);
+    ctx = nullptr;
+    
+    std::fprintf(stderr, "[glm5next] prefill complete, cur_pos=%d\n", cache_.cur_pos);
+    
+    // Decode loop: generate n_gen tokens
+    for (int generated = 0; generated < req.n_gen; ++generated) {
+        if (io.is_cancelled()) break;
+        
+        // Sample next token
+        int32_t next_token = 0;
+        if (process_logits) {
+            next_token = sample_logits(logits_vec.data(), w_.n_vocab, sampler_,
+                                      history, sampler_rng_);
+            history.push_back(next_token);
+        } else {
+            // Greedy: argmax
+            float max_val = logits_vec[0];
+            for (int i = 1; i < w_.n_vocab; ++i) {
+                if (logits_vec[i] > max_val) {
+                    max_val = logits_vec[i];
+                    next_token = i;
+                }
+            }
+        }
+        
+        // Emit token
+        io.emit(next_token);
+        out_tokens.push_back(next_token);
+        
+        // Check for EOS
+        const int32_t eos_token = 2;  // Typical EOS
+        if (next_token == eos_token) {
+            std::fprintf(stderr, "[glm5next] EOS at position %zu\n", out_tokens.size());
+            break;
+        }
+        
+        // Compute next token logits
+        ctx = ggml_init(params);
+        if (!ctx) {
+            result.status = GenerateStatus::Error;
+            result.error_message = "failed to create decode graph context";
+            break;
+        }
+        
+        gf = ggml_new_graph(ctx);
+        logits = glm5next_build_graph(
+            ctx, w_, cache_,
+            &next_token, 1,
+            cache_.cur_pos,
+            moe_hybrid_.get()
+        );
+        
+        if (!logits) {
+            ggml_free(ctx);
+            result.status = GenerateStatus::Error;
+            result.error_message = "decode graph construction failed";
+            break;
+        }
+        
+        ggml_build_forward_expand(gf, logits);
+        
+        if (ggml_backend_graph_compute(backend_, gf) != GGML_STATUS_SUCCESS) {
+            ggml_free(ctx);
+            result.status = GenerateStatus::Error;
+            result.error_message = "decode compute failed";
+            break;
+        }
+        
+        // Read logits (single token, no offset)
+        ggml_backend_tensor_get(logits, logits_vec.data(), 0,
+                                sizeof(float) * (size_t)w_.n_vocab);
+        
+        // Update cache position
+        cache_.cur_pos += 1;
+        cache_.n_past += 1;
+        
+        ggml_free(ctx);
+        ctx = nullptr;
+    }
+    
+    // Emit sentinel
+    io.emit(-1);
+    
+    result.n_gen = (int)out_tokens.size();
+    result.n_past = cache_.n_past;
     return result;
 }
 
