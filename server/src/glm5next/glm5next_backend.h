@@ -89,6 +89,9 @@ private:
     MoeHybridPlacement                moe_placement_;
     std::shared_ptr<MoeHybridStreamEngine> moe_stream_engine_;
     std::unique_ptr<MoeHybridRoutingStats> routing_stats_;
+    
+    // ROCmFP mix qtype (105/106) registered bases for cleanup
+    std::vector<const void *> registered_mix_bases_;
 
     bool load_model();
     bool init_hybrid_model();

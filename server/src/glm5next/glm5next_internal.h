@@ -178,4 +178,10 @@ struct Glm5NextBackendConfig {
     int max_ctx = 0;  // auto-fit
 };
 
+// Loader function - reads glm5next.* GGUF keys and registers ROCmFP mix qtypes
+bool glm5next_load_weights(const char * model_path,
+                           Glm5NextWeights & w,
+                           ggml_context * ctx,
+                           std::vector<const void *> & registered_mix_bases);
+
 }  // namespace dflash::common

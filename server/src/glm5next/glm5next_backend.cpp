@@ -41,9 +41,32 @@ bool Glm5NextBackend::init() {
 }
 
 bool Glm5NextBackend::load_model() {
-    // Stub: actual loader in glm5next_loader.cpp
-    std::fprintf(stderr, "[glm5next] load_model stub - loader not yet implemented\n");
-    return false;
+    // Allocate GGML context for weight loading
+    // Stub size - actual calculation needed based on model size
+    const size_t ctx_size = 1024 * 1024 * 1024;  // 1GB placeholder
+    
+    ggml_init_params params = {
+        /*.mem_size   =*/ ctx_size,
+        /*.mem_buffer =*/ nullptr,
+        /*.no_alloc   =*/ false,
+    };
+    
+    ggml_context * ctx = ggml_init(params);
+    if (!ctx) {
+        std::fprintf(stderr, "[glm5next] failed to create GGML context\n");
+        return false;
+    }
+    
+    // Load weights and register ROCmFP mix qtypes
+    if (!glm5next_load_weights(cfg_.target_path, w_, ctx, registered_mix_bases_)) {
+        std::fprintf(stderr, "[glm5next] glm5next_load_weights failed\n");
+        ggml_free(ctx);
+        return false;
+    }
+    
+    // Context ownership passed to backend
+    std::fprintf(stderr, "[glm5next] weights loaded successfully\n");
+    return true;
 }
 
 bool Glm5NextBackend::init_hybrid_model() {
@@ -128,6 +151,19 @@ void Glm5NextBackend::free_drafter() {
 }
 
 void Glm5NextBackend::shutdown() {
+    // Unregister ROCmFP mix qtypes (105/106) before freeing backend
+    // Must be called while GPU buffer is still valid
+    extern "C" void ggml_cuda_rocmfp2_mix_unregister(const void * base);
+    extern "C" void ggml_cuda_rocmfp3_mix_unregister(const void * base);
+    
+    for (const void * base : registered_mix_bases_) {
+        // Determine qtype from registered tensor to call correct unregister
+        // For now, try both (idempotent if not registered)
+        ggml_cuda_rocmfp2_mix_unregister(base);
+        ggml_cuda_rocmfp3_mix_unregister(base);
+    }
+    registered_mix_bases_.clear();
+    
     if (backend_) {
         ggml_backend_free(backend_);
         backend_ = nullptr;
