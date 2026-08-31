@@ -310,6 +310,13 @@ static ggml_tensor * glm5next_kda_attention(ggml_context * ctx,
         g = ggml_add(ctx, g, layer.kda_dt_bias);
     }
     
+    // If forget gate projection output is larger than d_inner, slice to first d_inner
+    // (same 2*d_inner output as Q/K/V projections)
+    if (g->ne[0] > d_inner) {
+        g = ggml_view_2d(ctx, g, d_inner, n_tokens, g->nb[1], 0);
+        g = ggml_cont(ctx, g);
+    }
+    
     g = ggml_reshape_3d(ctx, g, head_dim, n_head, n_tokens);
     
     // Multiply by -exp(A_log) (stored as ssm_a)
