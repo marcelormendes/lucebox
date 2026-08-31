@@ -353,7 +353,10 @@ static ggml_tensor * glm5next_kda_attention(ggml_context * ctx,
     ggml_tensor * kv = glm5next_mul_mat_logged(ctx, v, ggml_cont(ctx, ggml_transpose(ctx, k)), "kda_v", "kda_k^T");
     
     // state_new = g * state_prev + (1 - beta) * kv
-    ggml_tensor * one_minus_beta = ggml_sub(ctx, ggml_new_f32(const_ctx, 1.0f), beta);
+    // Compute 1 - beta using scale+add for proper broadcasting: 1 + (-1)*beta
+    ggml_tensor * one_minus_beta = ggml_add(ctx,
+                                            ggml_new_f32(const_ctx, 1.0f),
+                                            ggml_scale(ctx, beta, -1.0f));
     ggml_tensor * state_new = ggml_add(ctx,
                                       ggml_mul(ctx, g, state_prev),
                                       ggml_mul(ctx, one_minus_beta, kv));
