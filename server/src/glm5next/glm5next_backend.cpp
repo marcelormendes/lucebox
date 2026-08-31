@@ -97,7 +97,7 @@ bool Glm5NextBackend::init_hybrid_model() {
     ggml_init_params cache_params = {
         /*.mem_size   =*/ 512 * 1024 * 1024,  // 512MB for cache metadata
         /*.mem_buffer =*/ nullptr,
-        /*.no_alloc   =*/ false,
+        /*.no_alloc   =*/ true,
     };
     ggml_context * cache_ctx = ggml_init(cache_params);
     if (!cache_ctx) {
