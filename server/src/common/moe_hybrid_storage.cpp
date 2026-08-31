@@ -36,6 +36,26 @@ static bool duplicate_hot_experts_on_cold_gpu() {
     return enabled;
 }
 
+// Check if a GPU backend has sufficient memory for cold expert storage.
+// Cold experts require substantial memory (~80+ GiB for large models); small
+// dGPUs (~20 GiB) must not be used. Returns true if the backend should be
+// used for cold experts, false to fall back to CPU.
+static bool gpu_backend_suitable_for_cold_experts(ggml_backend_t backend) {
+    if (!backend) return false;
+    ggml_backend_dev_t dev = ggml_backend_get_device(backend);
+    if (!dev) return false;
+    
+    size_t free = 0, total = 0;
+    ggml_backend_dev_memory(dev, &free, &total);
+    
+    // Require >24 GiB total memory for cold expert allocation.
+    // This threshold excludes typical consumer dGPUs (RX 7900 XT ~20 GiB,
+    // RTX 4090 24 GiB) while allowing large UMA devices (APU iGPUs) and
+    // high-capacity accelerators.
+    constexpr size_t min_total_bytes = 25ULL * 1024 * 1024 * 1024;  // 25 GiB
+    return total > min_total_bytes;
+}
+
 int query_gpu_compute_sm() {
 #if defined(DFLASH27B_BACKEND_CUDA)
     int device = -1;
@@ -253,9 +273,22 @@ bool build_moe_hybrid_storage(const MoeHybridConfig & cfg,
     out.cold_backend_kind = cfg.cold_expert_backend;
     out.materialized_hot_experts = cfg.materialize_hot_experts;
     out.materialized_cold_experts = cfg.materialize_cold_experts;
-    out.cold_backend = cfg.cold_expert_backend == MoeHybridColdBackend::Gpu
-        ? (cold_gpu_backend ? cold_gpu_backend : gpu_backend)
-        : out.cpu_backend;
+    
+    // Select cold expert backend: prefer cold_gpu_backend if suitable, else fall back.
+    if (cfg.cold_expert_backend == MoeHybridColdBackend::Gpu) {
+        ggml_backend_t candidate = cold_gpu_backend ? cold_gpu_backend : gpu_backend;
+        if (gpu_backend_suitable_for_cold_experts(candidate)) {
+            out.cold_backend = candidate;
+        } else {
+            std::fprintf(stderr,
+                         "[hybrid-storage] cold GPU backend has insufficient memory "
+                         "(<=24 GiB); falling back to CPU for cold experts\n");
+            out.cold_backend = out.cpu_backend;
+            out.cold_backend_kind = MoeHybridColdBackend::Cpu;
+        }
+    } else {
+        out.cold_backend = out.cpu_backend;
+    }
     if (!out.cold_backend) {
         if (err) *err = "failed to select cold expert backend";
         return false;
@@ -465,9 +498,22 @@ bool build_moe_hybrid_storage_from_file(
     out.cold_backend_kind = cfg.cold_expert_backend;
     out.materialized_hot_experts = cfg.materialize_hot_experts;
     out.materialized_cold_experts = cfg.materialize_cold_experts;
-    out.cold_backend = cfg.cold_expert_backend == MoeHybridColdBackend::Gpu
-        ? (cold_gpu_backend ? cold_gpu_backend : gpu_backend)
-        : out.cpu_backend;
+    
+    // Select cold expert backend: prefer cold_gpu_backend if suitable, else fall back.
+    if (cfg.cold_expert_backend == MoeHybridColdBackend::Gpu) {
+        ggml_backend_t candidate = cold_gpu_backend ? cold_gpu_backend : gpu_backend;
+        if (gpu_backend_suitable_for_cold_experts(candidate)) {
+            out.cold_backend = candidate;
+        } else {
+            std::fprintf(stderr,
+                         "[hybrid-storage] cold GPU backend has insufficient memory "
+                         "(<=24 GiB); falling back to CPU for cold experts\n");
+            out.cold_backend = out.cpu_backend;
+            out.cold_backend_kind = MoeHybridColdBackend::Cpu;
+        }
+    } else {
+        out.cold_backend = out.cpu_backend;
+    }
     if (!out.cold_backend) {
         if (err) *err = "failed to select cold expert backend";
         return false;
