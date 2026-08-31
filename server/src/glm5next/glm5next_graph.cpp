@@ -229,8 +229,10 @@ static ggml_tensor * glm5next_causal_conv1d(ggml_context * ctx,
                                            ggml_tensor * conv_w,
                                            int d_conv, int d_inner,
                                            int n_tokens) {
-    // Project input
-    ggml_tensor * x_proj = glm5next_mul_mat_logged(ctx, proj_w, x, "conv1d_proj_w", "conv1d_x");
+    // Project input: proj_w is [out_dim, in_dim], need [in_dim, out_dim] for mul_mat
+    // x is [in_dim, n_tokens], want result [out_dim, n_tokens]
+    ggml_tensor * proj_w_t = ggml_cont(ctx, ggml_transpose(ctx, proj_w));
+    ggml_tensor * x_proj = glm5next_mul_mat_logged(ctx, proj_w_t, x, "conv1d_proj_w^T", "conv1d_x");
     x_proj = ggml_reshape_2d(ctx, x_proj, d_inner, n_tokens);
     
     // Conv1d weight reshape: [d_conv, 1, d_inner] -> [d_conv, d_inner]
