@@ -331,8 +331,8 @@ GenerateResult Glm5NextBackend::generate_impl(
         return result;
     }
     
-    // Build forward graph for prompt
-    ggml_cgraph * gf = ggml_new_graph(ctx);
+    // Build forward graph for prompt (use large size for 46-layer MoE model)
+    ggml_cgraph * gf = ggml_new_graph_custom(ctx, 32768, false);
     
     ggml_tensor * logits = glm5next_build_graph(
         ctx, const_ctx, w_, cache_,
@@ -420,7 +420,7 @@ GenerateResult Glm5NextBackend::generate_impl(
             break;
         }
         
-        gf = ggml_new_graph(ctx);
+        gf = ggml_new_graph_custom(ctx, 32768, false);
         logits = glm5next_build_graph(
             ctx, decode_const_ctx, w_, cache_,
             &next_token, 1,

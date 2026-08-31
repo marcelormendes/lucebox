@@ -586,8 +586,14 @@ bool glm5next_load_weights(const char * model_path,
                 layer.kda_dt_bias = ggml_get_tensor(ctx, layer_name(i, "ssm_dt.weight").c_str());
             }
             
-            // Output projection
+            // Output projection (try multiple names: attn_out.weight, attn_output.weight, attn_wo.weight)
             layer.attn_wo = ggml_get_tensor(ctx, layer_name(i, "attn_out.weight").c_str());
+            if (!layer.attn_wo) {
+                layer.attn_wo = ggml_get_tensor(ctx, layer_name(i, "attn_output.weight").c_str());
+            }
+            if (!layer.attn_wo) {
+                layer.attn_wo = ggml_get_tensor(ctx, layer_name(i, "attn_wo.weight").c_str());
+            }
         } else {
             // MLA sparse attention (11 of 45 layers) with IndexPool DSA
             // NoPE (qk_rope_head_dim=0)
@@ -598,7 +604,15 @@ bool glm5next_load_weights(const char * model_path,
             // Single KV head (MLA)
             layer.attn_wk_b = ggml_get_tensor(ctx, layer_name(i, "attn_k_b.weight").c_str());
             layer.attn_wv_b = ggml_get_tensor(ctx, layer_name(i, "attn_v_b.weight").c_str());
+            
+            // Output projection (try multiple names)
             layer.attn_wo = ggml_get_tensor(ctx, layer_name(i, "attn_out.weight").c_str());
+            if (!layer.attn_wo) {
+                layer.attn_wo = ggml_get_tensor(ctx, layer_name(i, "attn_output.weight").c_str());
+            }
+            if (!layer.attn_wo) {
+                layer.attn_wo = ggml_get_tensor(ctx, layer_name(i, "attn_wo.weight").c_str());
+            }
             
             // IndexPool DSA compressor (kpool=4)
             layer.indexer_compressor_ape = ggml_get_tensor(ctx,
