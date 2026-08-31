@@ -314,6 +314,7 @@ static ggml_tensor * glm5next_kda_attention(ggml_context * ctx,
 // ============================================================================
 
 static ggml_tensor * glm5next_mla_attention(ggml_context * ctx,
+                                           ggml_context * const_ctx,
                                            ggml_tensor * cur,
                                            const Glm5NextLayer & layer,
                                            Glm5NextCache & cache,
@@ -607,7 +608,7 @@ ggml_tensor * glm5next_build_graph(
             
             if (has_mla) {
                 // MLA sparse attention with IndexPool DSA + KV cache
-                cur = glm5next_mla_attention(ctx, cur, layer, cache, mla_layer_idx,
+                cur = glm5next_mla_attention(ctx, const_ctx, cur, layer, cache, mla_layer_idx,
                                             n_tokens, n_embd, n_head, head_dim,
                                             head_dim, w.index_topk, w.kpool);
                 ggml_set_name(cur, ("mla_out_" + std::to_string(il)).c_str());
