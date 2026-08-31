@@ -282,14 +282,18 @@ static ggml_tensor * glm5next_kda_attention(ggml_context * ctx,
     
     // If projection output is larger than d_inner, slice to first d_inner elements
     // (proj may output 2*d_inner for split streams; take first d_inner for each QKV)
+    // ggml_view_2d creates non-contiguous view; apply ggml_cont before reshape_3d
     if (q->ne[0] > d_inner) {
         q = ggml_view_2d(ctx, q, d_inner, n_tokens, q->nb[1], 0);
+        q = ggml_cont(ctx, q);
     }
     if (k->ne[0] > d_inner) {
         k = ggml_view_2d(ctx, k, d_inner, n_tokens, k->nb[1], 0);
+        k = ggml_cont(ctx, k);
     }
     if (v->ne[0] > d_inner) {
         v = ggml_view_2d(ctx, v, d_inner, n_tokens, v->nb[1], 0);
+        v = ggml_cont(ctx, v);
     }
     
     // Reshape for head-wise processing: [d_inner, n_tokens] -> [head_dim, n_head, n_tokens]
