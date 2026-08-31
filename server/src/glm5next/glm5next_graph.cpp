@@ -233,10 +233,13 @@ static ggml_tensor * glm5next_causal_conv1d(ggml_context * ctx,
     // x is [in_dim, n_tokens], want result [out_dim, n_tokens]
     ggml_tensor * proj_w_t = ggml_cont(ctx, ggml_transpose(ctx, proj_w));
     ggml_tensor * x_proj = glm5next_mul_mat_logged(ctx, proj_w_t, x, "conv1d_proj_w^T", "conv1d_x");
-    x_proj = ggml_reshape_2d(ctx, x_proj, d_inner, n_tokens);
     
-    // Conv1d weight reshape: [d_conv, 1, d_inner] -> [d_conv, d_inner]
-    ggml_tensor * conv_weight = ggml_reshape_2d(ctx, conv_w, d_conv, d_inner);
+    // Use actual output dimensions from projection, not d_inner parameter
+    const int64_t proj_out_dim = x_proj->ne[0];  // Actual output dimension from proj_w
+    x_proj = ggml_reshape_2d(ctx, x_proj, proj_out_dim, n_tokens);
+    
+    // Conv1d weight reshape: conv_w should match proj output dimension
+    ggml_tensor * conv_weight = ggml_reshape_2d(ctx, conv_w, d_conv, proj_out_dim);
     
     // Apply conv1d
     // For simplicity without full state cache, approximate with projection
@@ -244,7 +247,8 @@ static ggml_tensor * glm5next_causal_conv1d(ggml_context * ctx,
     ggml_tensor * out = ggml_ssm_conv(ctx, x_proj, conv_weight);
     out = ggml_silu(ctx, out);
     
-    return ggml_reshape_2d(ctx, out, d_inner, n_tokens);
+    // Return with actual output dimensions (may be 2*d_inner for split Q/K/V streams)
+    return ggml_reshape_2d(ctx, out, proj_out_dim, n_tokens);
 }
 
 static ggml_tensor * glm5next_kda_attention(ggml_context * ctx,
@@ -267,6 +271,18 @@ static ggml_tensor * glm5next_kda_attention(ggml_context * ctx,
                                             layer.kda_conv1d_k, d_conv, d_inner, n_tokens);
     ggml_tensor * v = glm5next_causal_conv1d(ctx, cur, layer.attn_wo, // placeholder: need wv
                                             layer.kda_conv1d_v, d_conv, d_inner, n_tokens);
+    
+    // If projection output is larger than d_inner, slice to first d_inner elements
+    // (proj may output 2*d_inner for split streams; take first d_inner for each QKV)
+    if (q->ne[0] > d_inner) {
+        q = ggml_view_2d(ctx, q, d_inner, n_tokens, q->nb[1], 0);
+    }
+    if (k->ne[0] > d_inner) {
+        k = ggml_view_2d(ctx, k, d_inner, n_tokens, k->nb[1], 0);
+    }
+    if (v->ne[0] > d_inner) {
+        v = ggml_view_2d(ctx, v, d_inner, n_tokens, v->nb[1], 0);
+    }
     
     // Reshape for head-wise processing: [d_inner, n_tokens] -> [head_dim, n_head, n_tokens]
     q = ggml_reshape_3d(ctx, q, head_dim, n_head, n_tokens);
