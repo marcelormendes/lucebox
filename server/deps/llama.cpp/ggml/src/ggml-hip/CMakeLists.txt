@@ -1,13 +1,21 @@
-if (NOT EXISTS $ENV{ROCM_PATH})
-    if (NOT EXISTS /opt/rocm)
-        set(ROCM_PATH /usr)
-    else()
-        set(ROCM_PATH /opt/rocm)
-    endif()
-else()
+# Pin ROCM_PATH from parent (server/CMakeLists.txt lines 80-88) or HIP_PATH env.
+# Never fall back to /usr to avoid mixing Debian HIP 5 with ROCm 7 (comgr SIGSEGV).
+if (DEFINED ROCM_PATH)
+    # Already set by parent CMake (preferred).
+elseif (DEFINED ENV{ROCM_PATH})
     set(ROCM_PATH $ENV{ROCM_PATH})
+elseif (DEFINED ENV{HIP_PATH})
+    set(ROCM_PATH $ENV{HIP_PATH})
+elseif (EXISTS /opt/rocm)
+    set(ROCM_PATH /opt/rocm)
+else()
+    message(FATAL_ERROR
+        "HIP backend requires ROCM_PATH, HIP_PATH, or /opt/rocm. "
+        "Set -DROCM_PATH=/opt/rocm-7.2.4 or export ROCM_PATH=/opt/rocm-7.2.4 "
+        "to avoid mixing system HIP 5 libraries.")
 endif()
 
+# Restrict find_package to ROCM_PATH only (no system /usr or /lib paths).
 list(APPEND CMAKE_PREFIX_PATH  ${ROCM_PATH})
 list(APPEND CMAKE_PREFIX_PATH "${ROCM_PATH}/lib64/cmake")
 
@@ -43,9 +51,9 @@ else()
     enable_language(HIP)
 endif()
 
-find_package(hip     REQUIRED)
-find_package(hipblas REQUIRED)
-find_package(rocblas REQUIRED)
+find_package(hip     REQUIRED PATHS ${ROCM_PATH} NO_DEFAULT_PATH)
+find_package(hipblas REQUIRED PATHS ${ROCM_PATH} NO_DEFAULT_PATH)
+find_package(rocblas REQUIRED PATHS ${ROCM_PATH} NO_DEFAULT_PATH)
 
 if (GGML_HIP_RCCL)
     find_package(rccl REQUIRED)
