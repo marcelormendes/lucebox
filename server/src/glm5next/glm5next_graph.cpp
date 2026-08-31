@@ -236,18 +236,26 @@ static ggml_tensor * glm5next_causal_conv1d(ggml_context * ctx,
     
     // Use actual output dimensions from projection, not d_inner parameter
     const int64_t proj_out_dim = x_proj->ne[0];  // Actual output dimension from proj_w
-    x_proj = ggml_reshape_2d(ctx, x_proj, proj_out_dim, n_tokens);
     
-    // Conv1d weight reshape: conv_w should match proj output dimension
+    // ggml_ssm_conv expects 3D: [n_t + d_conv - 1, d_inner, n_s]
+    // We have [proj_out_dim, n_tokens] and need to transpose + reshape to [n_t+d_conv-1, proj_out_dim, 1]
+    // For prefill without cached conv state, pad with d_conv-1 zeros at start
+    const int64_t n_t = n_tokens;
+    const int64_t conv_input_len = n_t + d_conv - 1;
+    
+    // Transpose to [n_tokens, proj_out_dim], pad to [conv_input_len, proj_out_dim], then reshape to 3D
+    x_proj = ggml_cont(ctx, ggml_transpose(ctx, x_proj));  // [n_tokens, proj_out_dim]
+    x_proj = ggml_pad(ctx, x_proj, d_conv - 1, 0, 0, 0);   // Pad d_conv-1 rows at start: [n_t+d_conv-1, proj_out_dim]
+    x_proj = ggml_reshape_3d(ctx, x_proj, conv_input_len, proj_out_dim, 1);  // [n_t+d_conv-1, proj_out_dim, 1]
+    
+    // Conv1d weight reshape: [d_conv, proj_out_dim]
     ggml_tensor * conv_weight = ggml_reshape_2d(ctx, conv_w, d_conv, proj_out_dim);
     
-    // Apply conv1d
-    // For simplicity without full state cache, approximate with projection
-    // Full impl needs state management: concat(conv_state, x_proj) then conv
+    // Apply conv1d: returns [proj_out_dim, n_t, 1]
     ggml_tensor * out = ggml_ssm_conv(ctx, x_proj, conv_weight);
     out = ggml_silu(ctx, out);
     
-    // Return with actual output dimensions (may be 2*d_inner for split Q/K/V streams)
+    // Reshape from [proj_out_dim, n_t, 1] to [proj_out_dim, n_tokens]
     return ggml_reshape_2d(ctx, out, proj_out_dim, n_tokens);
 }
 
