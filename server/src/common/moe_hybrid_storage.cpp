@@ -234,7 +234,17 @@ bool build_moe_hybrid_storage(const MoeHybridConfig & cfg,
                               std::string * err,
                               ggml_backend_t cold_gpu_backend) {
     if (!placement.matches(cfg)) {
-        if (err) *err = "placement does not match config";
+        if (err) {
+            char buf[512];
+            std::snprintf(buf, sizeof(buf),
+                "placement does not match config: "
+                "placement(n_layer=%d n_expert=%d n_expert_used=%d hot_counts.size=%zu hot_expert_ids.size=%zu) "
+                "vs config(n_layer=%d n_expert=%d n_expert_used=%d)",
+                placement.n_layer, placement.n_expert, placement.n_expert_used,
+                placement.hot_counts.size(), placement.hot_expert_ids.size(),
+                cfg.n_layer, cfg.n_expert, cfg.n_expert_used);
+            *err = buf;
+        }
         return false;
     }
     if ((int)layer_descs.size() != cfg.n_layer) {
@@ -446,7 +456,17 @@ bool build_moe_hybrid_storage_from_file(
     ggml_backend_t cold_gpu_backend) {
 
     if (!placement.matches(cfg)) {
-        if (err) *err = "placement does not match config";
+        if (err) {
+            char buf[512];
+            std::snprintf(buf, sizeof(buf),
+                "placement does not match config: "
+                "placement(n_layer=%d n_expert=%d n_expert_used=%d hot_counts.size=%zu hot_expert_ids.size=%zu) "
+                "vs config(n_layer=%d n_expert=%d n_expert_used=%d)",
+                placement.n_layer, placement.n_expert, placement.n_expert_used,
+                placement.hot_counts.size(), placement.hot_expert_ids.size(),
+                cfg.n_layer, cfg.n_expert, cfg.n_expert_used);
+            *err = buf;
+        }
         return false;
     }
     if ((int)layer_descs.size() != cfg.n_layer || (int)file_data.size() != cfg.n_layer) {

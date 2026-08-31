@@ -151,16 +151,22 @@ bool Glm5NextBackend::init_hybrid_model() {
         }
         
         // Placement: all experts on "cold" backend (device 1) if dual-GPU, else all-hot
+        moe_placement_.n_layer = n_moe_layers;
         moe_placement_.n_expert = w_.n_expert;
+        moe_placement_.n_expert_used = w_.n_expert_used;
         moe_placement_.hot_expert_ids.resize(n_moe_layers);
         
         if (dual_gpu) {
             // Dual-GPU: all experts on device 1 (cold backend), none on device 0 (hot)
+            moe_placement_.hot_counts.assign(n_moe_layers, 0);
+            moe_placement_.total_hot = 0;
             for (int il = 0; il < n_moe_layers; ++il) {
                 moe_placement_.hot_expert_ids[il].clear();  // No experts on device 0
             }
         } else {
             // Single-GPU fallback: all experts on device 0 (hot)
+            moe_placement_.hot_counts.assign(n_moe_layers, w_.n_expert);
+            moe_placement_.total_hot = n_moe_layers * w_.n_expert;
             for (int il = 0; il < n_moe_layers; ++il) {
                 moe_placement_.hot_expert_ids[il].resize(w_.n_expert);
                 for (int e = 0; e < w_.n_expert; ++e) {
