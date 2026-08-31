@@ -92,7 +92,8 @@ static bool read_expert_slices(ggml_backend_t backend,
     out.resize(expert_bytes * expert_ids.size());
     
     // Check if tensor has a backend buffer. If not, assume CPU-resident and read directly.
-    ggml_backend_buffer_t buf = ggml_backend_get_buffer(tensor);
+    // Use tensor->buffer directly (ggml_backend_get_buffer not available in this ggml version)
+    ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
     if (!buf) {
         // CPU-only tensor: read directly from tensor->data
         if (!tensor->data) {

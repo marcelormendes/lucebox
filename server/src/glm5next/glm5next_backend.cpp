@@ -304,12 +304,12 @@ GenerateResult Glm5NextBackend::generate_impl(
     
     std::fprintf(stderr, "[glm5next] prefill: %d tokens\n", prompt_len);
     
-    // Allocate graph context
+    // Allocate graph context (no_alloc=false to allow ggml_new_i32/f32 for graph constants)
     const size_t graph_ctx_size = 128 * 1024 * 1024;  // 128MB
     ggml_init_params params = {
         /*.mem_size   =*/ graph_ctx_size,
         /*.mem_buffer =*/ nullptr,
-        /*.no_alloc   =*/ true,
+        /*.no_alloc   =*/ false,
     };
     
     ggml_context * ctx = ggml_init(params);
