@@ -90,13 +90,33 @@ static bool read_expert_slices(ggml_backend_t backend,
         return true;
     }
     out.resize(expert_bytes * expert_ids.size());
+    
+    // Check if tensor has a backend buffer. If not, assume CPU-resident and read directly.
+    // Use tensor->buffer directly (ggml_backend_get_buffer not available in this ggml version)
+    ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
+    if (!buf) {
+        // CPU-only tensor: read directly from tensor->data
+        if (!tensor->data) {
+            if (err) *err = "expert tensor has no buffer and no CPU data";
+            return false;
+        }
+        for (size_t i = 0; i < expert_ids.size(); ++i) {
+            const int32_t expert_id = expert_ids[i];
+            const size_t offset = expert_bytes * (size_t)expert_id;
+            std::memcpy(out.data() + expert_bytes * i,
+                       (const uint8_t *)tensor->data + offset,
+                       expert_bytes);
+        }
+        return true;
+    }
+    
+    // Backend-allocated tensor: use ggml_backend_tensor_get
     for (size_t i = 0; i < expert_ids.size(); ++i) {
         const int32_t expert_id = expert_ids[i];
         const size_t offset = expert_bytes * (size_t)expert_id;
         ggml_backend_tensor_get(tensor, out.data() + expert_bytes * i, offset, expert_bytes);
     }
     (void)backend;
-    (void)err;
     return true;
 }
 
@@ -234,7 +254,17 @@ bool build_moe_hybrid_storage(const MoeHybridConfig & cfg,
                               std::string * err,
                               ggml_backend_t cold_gpu_backend) {
     if (!placement.matches(cfg)) {
-        if (err) *err = "placement does not match config";
+        if (err) {
+            char buf[512];
+            std::snprintf(buf, sizeof(buf),
+                "placement does not match config: "
+                "placement(n_layer=%d n_expert=%d n_expert_used=%d hot_counts.size=%zu hot_expert_ids.size=%zu) "
+                "vs config(n_layer=%d n_expert=%d n_expert_used=%d)",
+                placement.n_layer, placement.n_expert, placement.n_expert_used,
+                placement.hot_counts.size(), placement.hot_expert_ids.size(),
+                cfg.n_layer, cfg.n_expert, cfg.n_expert_used);
+            *err = buf;
+        }
         return false;
     }
     if ((int)layer_descs.size() != cfg.n_layer) {
@@ -446,7 +476,17 @@ bool build_moe_hybrid_storage_from_file(
     ggml_backend_t cold_gpu_backend) {
 
     if (!placement.matches(cfg)) {
-        if (err) *err = "placement does not match config";
+        if (err) {
+            char buf[512];
+            std::snprintf(buf, sizeof(buf),
+                "placement does not match config: "
+                "placement(n_layer=%d n_expert=%d n_expert_used=%d hot_counts.size=%zu hot_expert_ids.size=%zu) "
+                "vs config(n_layer=%d n_expert=%d n_expert_used=%d)",
+                placement.n_layer, placement.n_expert, placement.n_expert_used,
+                placement.hot_counts.size(), placement.hot_expert_ids.size(),
+                cfg.n_layer, cfg.n_expert, cfg.n_expert_used);
+            *err = buf;
+        }
         return false;
     }
     if ((int)layer_descs.size() != cfg.n_layer || (int)file_data.size() != cfg.n_layer) {

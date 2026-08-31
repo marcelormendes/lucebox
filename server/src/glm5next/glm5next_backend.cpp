@@ -151,16 +151,22 @@ bool Glm5NextBackend::init_hybrid_model() {
         }
         
         // Placement: all experts on "cold" backend (device 1) if dual-GPU, else all-hot
+        moe_placement_.n_layer = n_moe_layers;
         moe_placement_.n_expert = w_.n_expert;
+        moe_placement_.n_expert_used = w_.n_expert_used;
         moe_placement_.hot_expert_ids.resize(n_moe_layers);
         
         if (dual_gpu) {
             // Dual-GPU: all experts on device 1 (cold backend), none on device 0 (hot)
+            moe_placement_.hot_counts.assign(n_moe_layers, 0);
+            moe_placement_.total_hot = 0;
             for (int il = 0; il < n_moe_layers; ++il) {
                 moe_placement_.hot_expert_ids[il].clear();  // No experts on device 0
             }
         } else {
             // Single-GPU fallback: all experts on device 0 (hot)
+            moe_placement_.hot_counts.assign(n_moe_layers, w_.n_expert);
+            moe_placement_.total_hot = n_moe_layers * w_.n_expert;
             for (int il = 0; il < n_moe_layers; ++il) {
                 moe_placement_.hot_expert_ids[il].resize(w_.n_expert);
                 for (int e = 0; e < w_.n_expert; ++e) {
@@ -298,8 +304,8 @@ GenerateResult Glm5NextBackend::generate_impl(
     
     std::fprintf(stderr, "[glm5next] prefill: %d tokens\n", prompt_len);
     
-    // Allocate graph context
-    const size_t graph_ctx_size = 128 * 1024 * 1024;  // 128MB
+    // Allocate graph context (no_alloc=true, backend will allocate compute tensors)
+    const size_t graph_ctx_size = 128 * 1024 * 1024;  // 128MB for graph metadata
     ggml_init_params params = {
         /*.mem_size   =*/ graph_ctx_size,
         /*.mem_buffer =*/ nullptr,
@@ -312,17 +318,31 @@ GenerateResult Glm5NextBackend::generate_impl(
         return result;
     }
     
-    // Build forward graph for prompt
-    ggml_cgraph * gf = ggml_new_graph(ctx);
+    // Separate context for constants (ggml_new_i32/f32 need no_alloc=false)
+    ggml_init_params const_params = {
+        /*.mem_size   =*/ 16 * 1024 * 1024,  // 16MB for constants
+        /*.mem_buffer =*/ nullptr,
+        /*.no_alloc   =*/ false,
+    };
+    ggml_context * const_ctx = ggml_init(const_params);
+    if (!const_ctx) {
+        ggml_free(ctx);
+        result.fail(GenerateErrorCode::PrefillFailed, "failed to create constants context");
+        return result;
+    }
+    
+    // Build forward graph for prompt (use large size for 46-layer MoE model)
+    ggml_cgraph * gf = ggml_new_graph_custom(ctx, 32768, false);
     
     ggml_tensor * logits = glm5next_build_graph(
-        ctx, w_, cache_,
+        ctx, const_ctx, w_, cache_,
         req.prompt.data(), prompt_len,
         cache_.cur_pos,
         moe_hybrid_.get()
     );
     
     if (!logits) {
+        ggml_free(const_ctx);
         ggml_free(ctx);
         result.fail(GenerateErrorCode::PrefillFailed, "prefill graph construction failed");
         return result;
@@ -332,6 +352,7 @@ GenerateResult Glm5NextBackend::generate_impl(
     
     // Compute prefill
     if (ggml_backend_graph_compute(backend_, gf) != GGML_STATUS_SUCCESS) {
+        ggml_free(const_ctx);
         ggml_free(ctx);
         result.fail(GenerateErrorCode::PrefillFailed, "prefill compute failed");
         return result;
@@ -347,6 +368,7 @@ GenerateResult Glm5NextBackend::generate_impl(
     cache_.cur_pos += prompt_len;
     cache_.n_past += prompt_len;
     
+    ggml_free(const_ctx);
     ggml_free(ctx);
     ctx = nullptr;
     
@@ -391,15 +413,23 @@ GenerateResult Glm5NextBackend::generate_impl(
             break;
         }
         
-        gf = ggml_new_graph(ctx);
+        ggml_context * decode_const_ctx = ggml_init(const_params);
+        if (!decode_const_ctx) {
+            ggml_free(ctx);
+            result.fail(GenerateErrorCode::DecodeFailed, "failed to create decode constants context");
+            break;
+        }
+        
+        gf = ggml_new_graph_custom(ctx, 32768, false);
         logits = glm5next_build_graph(
-            ctx, w_, cache_,
+            ctx, decode_const_ctx, w_, cache_,
             &next_token, 1,
             cache_.cur_pos,
             moe_hybrid_.get()
         );
         
         if (!logits) {
+            ggml_free(decode_const_ctx);
             ggml_free(ctx);
             result.fail(GenerateErrorCode::DecodeFailed, "decode graph construction failed");
             break;
@@ -408,6 +438,7 @@ GenerateResult Glm5NextBackend::generate_impl(
         ggml_build_forward_expand(gf, logits);
         
         if (ggml_backend_graph_compute(backend_, gf) != GGML_STATUS_SUCCESS) {
+            ggml_free(decode_const_ctx);
             ggml_free(ctx);
             result.fail(GenerateErrorCode::DecodeFailed, "decode compute failed");
             break;
@@ -421,6 +452,7 @@ GenerateResult Glm5NextBackend::generate_impl(
         cache_.cur_pos += 1;
         cache_.n_past += 1;
         
+        ggml_free(decode_const_ctx);
         ggml_free(ctx);
         ctx = nullptr;
     }
