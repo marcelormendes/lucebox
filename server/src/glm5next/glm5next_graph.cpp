@@ -20,20 +20,23 @@ namespace dflash::common {
 
 namespace {
 
+// Forward declare ggml_can_mul_mat for explicit checking
+extern "C" bool ggml_can_mul_mat(const struct ggml_tensor * t0, const struct ggml_tensor * t1);
+
 // Logging wrapper for ggml_mul_mat with shape diagnostics
 static ggml_tensor * glm5next_mul_mat_logged(ggml_context * ctx, 
                                              ggml_tensor * a, 
                                              ggml_tensor * b,
                                              const char * a_name,
                                              const char * b_name) {
-    std::fprintf(stderr, "[glm5next_mul_mat] %s [%lld,%lld,%lld,%lld] @ %s [%lld,%lld,%lld,%lld]\n",
-                 a_name, (long long)a->ne[0], (long long)a->ne[1], (long long)a->ne[2], (long long)a->ne[3],
-                 b_name, (long long)b->ne[0], (long long)b->ne[1], (long long)b->ne[2], (long long)b->ne[3]);
+    std::fprintf(stderr, "[glm5next_mul_mat] %s [%lld,%lld,%lld,%lld] ptr=%p @ %s [%lld,%lld,%lld,%lld] ptr=%p\n",
+                 a_name, (long long)a->ne[0], (long long)a->ne[1], (long long)a->ne[2], (long long)a->ne[3], (void*)a,
+                 b_name, (long long)b->ne[0], (long long)b->ne[1], (long long)b->ne[2], (long long)b->ne[3], (void*)b);
     
-    // Verify ggml_can_mul_mat conditions explicitly
-    bool can_mul = (a->ne[0] == b->ne[0]) &&
-                   (b->ne[2] % a->ne[2] == 0) &&
-                   (b->ne[3] % a->ne[3] == 0);
+    // Verify ggml_can_mul_mat with exact pointers being passed
+    bool can_mul = ggml_can_mul_mat(a, b);
+    std::fprintf(stderr, "[glm5next_mul_mat] ggml_can_mul_mat(%p, %p) = %d\n", (void*)a, (void*)b, can_mul);
+    
     if (!can_mul) {
         std::fprintf(stderr, "[glm5next_mul_mat] FAIL: ne[0] match=%d (%lld vs %lld), "
                      "ne[2] broadcast=%d (%lld %% %lld = %lld), "
@@ -141,16 +144,8 @@ static ggml_tensor * glm5next_hc_pre(ggml_context * ctx,
         flat_2d = ggml_cont(ctx, flat_2d);
     }
     
-    // Log the exact tensors being passed to mul_mat
-    std::fprintf(stderr, "[glm5next_hc_pre] hc_fn_2d [%lld,%lld,%lld,%lld] ptr=%p\n",
-                 (long long)hc_fn_2d->ne[0], (long long)hc_fn_2d->ne[1], 
-                 (long long)hc_fn_2d->ne[2], (long long)hc_fn_2d->ne[3], (void*)hc_fn_2d);
-    std::fprintf(stderr, "[glm5next_hc_pre] flat_2d [%lld,%lld,%lld,%lld] ptr=%p\n",
-                 (long long)flat_2d->ne[0], (long long)flat_2d->ne[1], 
-                 (long long)flat_2d->ne[2], (long long)flat_2d->ne[3], (void*)flat_2d);
-    
     // Mix projection: [hc_mix_dim, nt] = hc_fn_2d^T @ flat_2d
-    ggml_tensor * mixes = ggml_mul_mat(ctx, hc_fn_2d, flat_2d);
+    ggml_tensor * mixes = glm5next_mul_mat_logged(ctx, hc_fn_2d, flat_2d, "hc_fn_2d", "flat_2d");
     
     // Extract scales and bases
     ggml_tensor * scale_pre = glm5next_view_1d(ctx, hc_scale, 1, 0);
@@ -236,7 +231,7 @@ static ggml_tensor * glm5next_causal_conv1d(ggml_context * ctx,
                                            int d_conv, int d_inner,
                                            int n_tokens) {
     // Project input
-    ggml_tensor * x_proj = ggml_mul_mat(ctx, proj_w, x);
+    ggml_tensor * x_proj = glm5next_mul_mat_logged(ctx, proj_w, x, "conv1d_proj_w", "conv1d_x");
     x_proj = ggml_reshape_2d(ctx, x_proj, d_inner, n_tokens);
     
     // Conv1d weight reshape: [d_conv, 1, d_inner] -> [d_conv, d_inner]
@@ -279,8 +274,8 @@ static ggml_tensor * glm5next_kda_attention(ggml_context * ctx,
     
     // Forget gate: g = gate_lower_bound * sigmoid(exp(A_log) * (f_b(f_a(x)) + dt_bias))
     // ssm_a holds -exp(A_log), so exp(A_log)*(...) == -(ssm_a*(...))
-    ggml_tensor * g = ggml_mul_mat(ctx, layer.kda_f_a, cur);
-    g = ggml_mul_mat(ctx, layer.kda_f_b, g);
+    ggml_tensor * g = glm5next_mul_mat_logged(ctx, layer.kda_f_a, cur, "kda_f_a", "kda_cur_f");
+    g = glm5next_mul_mat_logged(ctx, layer.kda_f_b, g, "kda_f_b", "kda_g");
     
     if (layer.kda_dt_bias) {
         g = ggml_add(ctx, g, layer.kda_dt_bias);
@@ -319,7 +314,7 @@ static ggml_tensor * glm5next_kda_attention(ggml_context * ctx,
     ggml_set_name(state_prev, "kda_state_prev");
     
     // Compute k @ v^T for current token: [head_dim, n_head]
-    ggml_tensor * kv = ggml_mul_mat(ctx, v, ggml_cont(ctx, ggml_transpose(ctx, k)));
+    ggml_tensor * kv = glm5next_mul_mat_logged(ctx, v, ggml_cont(ctx, ggml_transpose(ctx, k)), "kda_v", "kda_k^T");
     
     // state_new = g * state_prev + (1 - beta) * kv
     ggml_tensor * one_minus_beta = ggml_sub(ctx, ggml_new_f32(const_ctx, 1.0f), beta);
@@ -337,7 +332,7 @@ static ggml_tensor * glm5next_kda_attention(ggml_context * ctx,
     ggml_set_name(state_new, "kda_state_update");
     
     // Output: q @ state_new
-    ggml_tensor * out = ggml_mul_mat(ctx, state_new, q);  // [head_dim, n_head, n_tokens]
+    ggml_tensor * out = glm5next_mul_mat_logged(ctx, state_new, q, "kda_state_new", "kda_q");  // [head_dim, n_head, n_tokens]
     
     // Output gating: RMSNorm then sigmoid gate
     ggml_tensor * o_gate = glm5next_mul_mat_logged(ctx, layer.kda_g_a, cur, "kda_g_a", "kda_cur");
@@ -443,7 +438,7 @@ static ggml_tensor * glm5next_mla_attention(ggml_context * ctx,
     
     // 3. Compute attention logits: Q @ indexer_scores over full context
     ggml_tensor * q_pooled = ggml_mean(ctx, q);  // [head_dim, n_tokens]
-    ggml_tensor * attn_logits = ggml_mul_mat(ctx, indexer_scores, q_pooled);  // [n_ctx_tokens, n_tokens]
+    ggml_tensor * attn_logits = glm5next_mul_mat_logged(ctx, indexer_scores, q_pooled, "mla_indexer_scores", "mla_q_pooled");  // [n_ctx_tokens, n_tokens]
     
     // 4. Top-k selection from cached context + always_select_tail (last kpool)
     const int n_available = n_ctx_tokens - kpool;  // Reserve tail
@@ -471,7 +466,7 @@ static ggml_tensor * glm5next_mla_attention(ggml_context * ctx,
     v_selected = ggml_reshape_3d(ctx, v_selected, head_dim, 1, n_selected);
     
     // Q @ K^T
-    ggml_tensor * kqv = ggml_mul_mat(ctx, k_selected, q);
+    ggml_tensor * kqv = glm5next_mul_mat_logged(ctx, k_selected, q, "mla_k_selected", "mla_q");
     
     // Scale
     kqv = ggml_scale(ctx, kqv, 1.0f / sqrtf((float)head_dim));
@@ -480,7 +475,7 @@ static ggml_tensor * glm5next_mla_attention(ggml_context * ctx,
     kqv = ggml_soft_max(ctx, kqv);
     
     // @ V
-    ggml_tensor * kqv_out = ggml_mul_mat(ctx, v_selected, kqv);
+    ggml_tensor * kqv_out = glm5next_mul_mat_logged(ctx, v_selected, kqv, "mla_v_selected", "mla_kqv");
     
     // Flatten: [head_dim, n_head, n_tokens] -> [n_head * head_dim, n_tokens]
     kqv_out = ggml_reshape_2d(ctx, kqv_out, n_head * head_dim, n_tokens);
@@ -527,7 +522,7 @@ static ggml_tensor * glm5next_moe_ffn(ggml_context * ctx,
                                      int n_tokens, int n_expert, int n_expert_used,
                                      float swiglu_clamp) {
     // Router: sigmoid(gate_logits) + exp_probs_b bias
-    ggml_tensor * router_logits = ggml_mul_mat(ctx, layer.moe_gate, cur);
+    ggml_tensor * router_logits = glm5next_mul_mat_logged(ctx, layer.moe_gate, cur, "moe_gate", "moe_cur");
     
     // Add exp_probs_b bias if present
     if (layer.moe_exp_probs_b) {
