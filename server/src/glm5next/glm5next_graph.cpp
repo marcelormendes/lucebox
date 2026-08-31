@@ -381,6 +381,13 @@ static ggml_tensor * glm5next_kda_attention(ggml_context * ctx,
     // Output gating: RMSNorm then sigmoid gate
     ggml_tensor * o_gate = glm5next_mul_mat_logged(ctx, layer.kda_g_a, cur, "kda_g_a", "kda_cur");
     o_gate = glm5next_mul_mat_logged(ctx, layer.kda_g_b, o_gate, "kda_g_b", "kda_o_gate");
+    
+    // If output gate projection is larger than d_inner, slice to first d_inner (same as g/Q/K/V)
+    if (o_gate->ne[0] > d_inner) {
+        o_gate = ggml_view_2d(ctx, o_gate, d_inner, n_tokens, o_gate->nb[1], 0);
+        o_gate = ggml_cont(ctx, o_gate);
+    }
+    
     o_gate = ggml_reshape_3d(ctx, o_gate, head_dim, n_head, n_tokens);
     
     // RMSNorm (needs ssm_o_norm tensor, approximate for now)
