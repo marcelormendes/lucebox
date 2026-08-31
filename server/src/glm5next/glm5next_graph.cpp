@@ -20,6 +20,18 @@ namespace dflash::common {
 
 namespace {
 
+// Logging wrapper for ggml_mul_mat with shape diagnostics
+static ggml_tensor * glm5next_mul_mat_logged(ggml_context * ctx, 
+                                             ggml_tensor * a, 
+                                             ggml_tensor * b,
+                                             const char * a_name,
+                                             const char * b_name) {
+    std::fprintf(stderr, "[glm5next_mul_mat] %s [%lld,%lld,%lld,%lld] @ %s [%lld,%lld,%lld,%lld]\n",
+                 a_name, (long long)a->ne[0], (long long)a->ne[1], (long long)a->ne[2], (long long)a->ne[3],
+                 b_name, (long long)b->ne[0], (long long)b->ne[1], (long long)b->ne[2], (long long)b->ne[3]);
+    return ggml_mul_mat(ctx, a, b);
+}
+
 // ============================================================================
 // mHC (Hierarchical Controller) Operations
 // ============================================================================
@@ -104,7 +116,7 @@ static ggml_tensor * glm5next_hc_pre(ggml_context * ctx,
     flat = ggml_rms_norm(ctx, flat, 1e-6f);
     
     // Mix projection
-    ggml_tensor * mixes = ggml_mul_mat(ctx, hc_fn, flat);
+    ggml_tensor * mixes = glm5next_mul_mat_logged(ctx, hc_fn, flat, "hc_fn", "hc_flat");
     
     // Extract scales and bases
     ggml_tensor * scale_pre = glm5next_view_1d(ctx, hc_scale, 1, 0);
@@ -253,7 +265,7 @@ static ggml_tensor * glm5next_kda_attention(ggml_context * ctx,
     g = ggml_scale(ctx, g, gate_lower_bound);
     
     // Beta for mixing
-    ggml_tensor * beta = ggml_mul_mat(ctx, layer.kda_beta, cur);
+    ggml_tensor * beta = glm5next_mul_mat_logged(ctx, layer.kda_beta, cur, "kda_beta", "kda_cur_beta");
     beta = ggml_sigmoid(ctx, ggml_reshape_3d(ctx, beta, 1, n_head, n_tokens));
     
     // Normalize Q and K (reference uses hard-coded 1e-6)
@@ -294,8 +306,8 @@ static ggml_tensor * glm5next_kda_attention(ggml_context * ctx,
     ggml_tensor * out = ggml_mul_mat(ctx, state_new, q);  // [head_dim, n_head, n_tokens]
     
     // Output gating: RMSNorm then sigmoid gate
-    ggml_tensor * o_gate = ggml_mul_mat(ctx, layer.kda_g_a, cur);
-    o_gate = ggml_mul_mat(ctx, layer.kda_g_b, o_gate);
+    ggml_tensor * o_gate = glm5next_mul_mat_logged(ctx, layer.kda_g_a, cur, "kda_g_a", "kda_cur");
+    o_gate = glm5next_mul_mat_logged(ctx, layer.kda_g_b, o_gate, "kda_g_b", "kda_o_gate");
     o_gate = ggml_reshape_3d(ctx, o_gate, head_dim, n_head, n_tokens);
     
     // RMSNorm (needs ssm_o_norm tensor, approximate for now)
@@ -304,7 +316,7 @@ static ggml_tensor * glm5next_kda_attention(ggml_context * ctx,
     
     // Flatten and project to output
     out = ggml_reshape_2d(ctx, out, d_inner, n_tokens);
-    out = ggml_mul_mat(ctx, layer.attn_wo, out);
+    out = glm5next_mul_mat_logged(ctx, layer.attn_wo, out, "kda_attn_wo", "kda_out");
     
     return out;
 }
@@ -325,19 +337,19 @@ static ggml_tensor * glm5next_mla_attention(ggml_context * ctx,
     // NoPE MLA: no rotary position encoding
     
     // ── Query path: compressed latent → q_a_norm → q_b ──
-    ggml_tensor * q_latent = ggml_mul_mat(ctx, layer.attn_q_a, cur);
+    ggml_tensor * q_latent = glm5next_mul_mat_logged(ctx, layer.attn_q_a, cur, "mla_attn_q_a", "mla_cur");
     q_latent = ggml_rms_norm(ctx, q_latent, 1e-6f);
     if (layer.attn_q_a_norm) {
         q_latent = ggml_mul(ctx, q_latent, layer.attn_q_a_norm);
     }
-    ggml_tensor * q = ggml_mul_mat(ctx, layer.attn_q_b, q_latent);
+    ggml_tensor * q = glm5next_mul_mat_logged(ctx, layer.attn_q_b, q_latent, "mla_attn_q_b", "mla_q_latent");
     
     // Reshape Q: [n_head * head_dim, n_tokens] -> [head_dim, n_head, n_tokens]
     q = ggml_reshape_3d(ctx, q, head_dim, n_head, n_tokens);
     
     // ── KV path: absorbed wk_b/wv_b + cache append ──
-    ggml_tensor * k_new = ggml_mul_mat(ctx, layer.attn_wk_b, cur);  // [kv_lora_rank, n_tokens]
-    ggml_tensor * v_new = ggml_mul_mat(ctx, layer.attn_wv_b, cur);
+    ggml_tensor * k_new = glm5next_mul_mat_logged(ctx, layer.attn_wk_b, cur, "mla_attn_wk_b", "mla_cur_kv");
+    ggml_tensor * v_new = glm5next_mul_mat_logged(ctx, layer.attn_wv_b, cur, "mla_attn_wv_b", "mla_cur_kv");
     
     // Append new K/V to cache at position cur_pos
     // Cache shape: [head_dim, n_ctx, n_mla_layers]
@@ -440,7 +452,7 @@ static ggml_tensor * glm5next_mla_attention(ggml_context * ctx,
     kqv_out = ggml_reshape_2d(ctx, kqv_out, n_head * head_dim, n_tokens);
     
     // Output projection
-    ggml_tensor * out = ggml_mul_mat(ctx, layer.attn_wo, kqv_out);
+    ggml_tensor * out = glm5next_mul_mat_logged(ctx, layer.attn_wo, kqv_out, "mla_attn_wo", "mla_kqv_out");
     
     return out;
 }
@@ -454,8 +466,8 @@ static ggml_tensor * glm5next_dense_ffn(ggml_context * ctx,
                                        ggml_tensor * cur,
                                        const Glm5NextLayer & layer,
                                        float swiglu_clamp) {
-    ggml_tensor * gate = ggml_mul_mat(ctx, layer.ffn_gate, cur);
-    ggml_tensor * up = ggml_mul_mat(ctx, layer.ffn_up, cur);
+    ggml_tensor * gate = glm5next_mul_mat_logged(ctx, layer.ffn_gate, cur, "ffn_gate", "ffn_cur");
+    ggml_tensor * up = glm5next_mul_mat_logged(ctx, layer.ffn_up, cur, "ffn_up", "ffn_cur");
     
     // Clamped SwiGLU: gate (-inf, clamp] → SiLU, up [-clamp, clamp]
     gate = ggml_clamp(ctx, gate, -INFINITY, swiglu_clamp);
@@ -463,7 +475,7 @@ static ggml_tensor * glm5next_dense_ffn(ggml_context * ctx,
     up = ggml_clamp(ctx, up, -swiglu_clamp, swiglu_clamp);
     
     ggml_tensor * gated = ggml_mul(ctx, gate, up);
-    ggml_tensor * out = ggml_mul_mat(ctx, layer.ffn_down, gated);
+    ggml_tensor * out = glm5next_mul_mat_logged(ctx, layer.ffn_down, gated, "ffn_down", "ffn_gated");
     
     return out;
 }
@@ -757,7 +769,7 @@ ggml_tensor * glm5next_build_graph(
     cur = ggml_mul(ctx, cur, w.output_norm);
     ggml_set_name(cur, "output_norm");
     
-    ggml_tensor * logits = ggml_mul_mat(ctx, w.output, cur);
+    ggml_tensor * logits = glm5next_mul_mat_logged(ctx, w.output, cur, "output", "output_norm");
     ggml_set_name(logits, "logits");
 
     return logits;
