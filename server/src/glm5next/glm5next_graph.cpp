@@ -353,21 +353,26 @@ static ggml_tensor * glm5next_kda_attention(ggml_context * ctx,
     ggml_tensor * kv = glm5next_mul_mat_logged(ctx, v, ggml_cont(ctx, ggml_transpose(ctx, k)), "kda_v", "kda_k^T");
     
     // state_new = g * state_prev + (1 - beta) * kv
-    // Compute 1 - beta using scale+add for proper broadcasting: 1 + (-1)*beta
+    // Compute 1 - beta: ggml_add(a, b) broadcasts b onto a, so put tensor first
     ggml_tensor * one_minus_beta = ggml_add(ctx,
-                                            ggml_new_f32(const_ctx, 1.0f),
-                                            ggml_scale(ctx, beta, -1.0f));
+                                            ggml_scale(ctx, beta, -1.0f),
+                                            ggml_new_f32(const_ctx, 1.0f));
     ggml_tensor * state_new = ggml_add(ctx,
                                       ggml_mul(ctx, g, state_prev),
-                                      ggml_mul(ctx, one_minus_beta, kv));
+                                      ggml_mul(ctx, kv, one_minus_beta));
     
-    // Write new state back to cache
+    // Write new state back to cache (prefill: write only last token's state)
+    // state_new is [head_dim, n_head, n_tokens], cache slot is [head_dim, n_head, 1]
+    ggml_tensor * state_last = ggml_view_3d(ctx, state_new,
+                                           head_dim, n_head, 1,
+                                           state_new->nb[1], state_new->nb[2],
+                                           (n_tokens - 1) * state_new->nb[2]);
     ggml_tensor * state_dst = ggml_view_3d(ctx, cache.kda_state,
                                           head_dim, n_head, 1,
                                           cache.kda_state->nb[1],
                                           cache.kda_state->nb[2],
                                           kda_layer_idx * cache.kda_state->nb[2]);
-    state_new = ggml_cpy(ctx, state_new, state_dst);
+    state_new = ggml_cpy(ctx, state_last, state_dst);
     ggml_set_name(state_new, "kda_state_update");
     
     // Output: q @ state_new
