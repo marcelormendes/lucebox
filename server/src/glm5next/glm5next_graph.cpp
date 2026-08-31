@@ -58,25 +58,25 @@ static ggml_tensor * glm5next_hc_mean(ggml_context * ctx, ggml_tensor * x) {
 }
 
 // Sinkhorn normalization on combine matrix [dst_hc, src_hc, n_tokens]
-static ggml_tensor * glm5next_hc_sinkhorn(ggml_context * ctx, ggml_tensor * comb,
-                                          int n_iters, float eps) {
+static ggml_tensor * glm5next_hc_sinkhorn(ggml_context * ctx, ggml_context * const_ctx,
+                                          ggml_tensor * comb, int n_iters, float eps) {
     // Apply softmax on src_hc axis (ne[0])
     comb = ggml_soft_max(ctx, comb);
-    comb = ggml_add(ctx, comb, ggml_new_f32(ctx, eps));
+    comb = ggml_add(ctx, comb, ggml_new_f32(const_ctx, eps));
     
     // Iterative row/column normalization
     for (int i = 0; i < n_iters; ++i) {
         // Normalize columns (over dst_hc, which is ne[1])
         ggml_tensor * t = ggml_cont(ctx, ggml_permute(ctx, comb, 1, 0, 2, 3));
         ggml_tensor * sum = ggml_sum_rows(ctx, t);
-        sum = ggml_add(ctx, sum, ggml_new_f32(ctx, eps));
+        sum = ggml_add(ctx, sum, ggml_new_f32(const_ctx, eps));
         sum = ggml_permute(ctx, sum, 1, 0, 2, 3);
         comb = ggml_div(ctx, comb, sum);
         
         if (i < n_iters - 1) {
             // Normalize rows (over src_hc, which is ne[0])
             sum = ggml_sum_rows(ctx, comb);
-            sum = ggml_add(ctx, sum, ggml_new_f32(ctx, eps));
+            sum = ggml_add(ctx, sum, ggml_new_f32(const_ctx, eps));
             comb = ggml_div(ctx, comb, sum);
         }
     }
@@ -86,6 +86,7 @@ static ggml_tensor * glm5next_hc_sinkhorn(ggml_context * ctx, ggml_tensor * comb
 
 // HC pre-processing: extract working vector and compute post gates + combine matrix
 static ggml_tensor * glm5next_hc_pre(ggml_context * ctx,
+                                     ggml_context * const_ctx,
                                      ggml_tensor * hc_state,    // [n_embd, n_hc, n_tokens]
                                      ggml_tensor * hc_fn,       // [hc_dim, hc_mix_dim]
                                      ggml_tensor * hc_scale,    // [3]
@@ -118,7 +119,7 @@ static ggml_tensor * glm5next_hc_pre(ggml_context * ctx,
     ggml_tensor * pre = glm5next_view_2d(ctx, mixes, n_hc, nt, 0);
     pre = glm5next_hc_affine(ctx, pre, scale_pre, base_pre);
     pre = ggml_sigmoid(ctx, pre);
-    pre = ggml_add(ctx, pre, ggml_new_f32(ctx, hc_eps));
+    pre = ggml_add(ctx, pre, ggml_new_f32(const_ctx, hc_eps));
     
     // Post gates: sigmoid(post * scale + base) * 2
     *out_post = glm5next_view_2d(ctx, mixes, n_hc, nt, n_hc);
@@ -130,7 +131,7 @@ static ggml_tensor * glm5next_hc_pre(ggml_context * ctx,
     *out_comb = glm5next_view_2d(ctx, mixes, n_hc * n_hc, nt, 2 * n_hc);
     *out_comb = glm5next_hc_affine(ctx, *out_comb, scale_comb, base_comb);
     *out_comb = ggml_reshape_3d(ctx, *out_comb, n_hc, n_hc, nt);
-    *out_comb = glm5next_hc_sinkhorn(ctx, *out_comb, sinkhorn_iters, hc_eps);
+    *out_comb = glm5next_hc_sinkhorn(ctx, const_ctx, *out_comb, sinkhorn_iters, hc_eps);
     
     // Collapse: sum_h pre[h] * streams[h]
     ggml_tensor * result = nullptr;
@@ -205,6 +206,7 @@ static ggml_tensor * glm5next_causal_conv1d(ggml_context * ctx,
 }
 
 static ggml_tensor * glm5next_kda_attention(ggml_context * ctx,
+                                           ggml_context * const_ctx,
                                            ggml_tensor * cur,
                                            const Glm5NextLayer & layer,
                                            Glm5NextCache & cache,
@@ -274,7 +276,7 @@ static ggml_tensor * glm5next_kda_attention(ggml_context * ctx,
     ggml_tensor * kv = ggml_mul_mat(ctx, v, ggml_cont(ctx, ggml_transpose(ctx, k)));
     
     // state_new = g * state_prev + (1 - beta) * kv
-    ggml_tensor * one_minus_beta = ggml_sub(ctx, ggml_new_f32(ctx, 1.0f), beta);
+    ggml_tensor * one_minus_beta = ggml_sub(ctx, ggml_new_f32(const_ctx, 1.0f), beta);
     ggml_tensor * state_new = ggml_add(ctx,
                                       ggml_mul(ctx, g, state_prev),
                                       ggml_mul(ctx, one_minus_beta, kv));
@@ -382,7 +384,7 @@ static ggml_tensor * glm5next_mla_attention(ggml_context * ctx,
     // APE (Absolute Position Encoding) for ALL cached positions
     if (layer.indexer_compressor_ape) {
         // Build position indices [0, 1, ..., n_ctx_tokens-1]
-        ggml_tensor * pos_ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_ctx_tokens);
+        ggml_tensor * pos_ids = ggml_new_tensor_1d(const_ctx, GGML_TYPE_I32, n_ctx_tokens);
         // APE lookup will happen at runtime
         ggml_tensor * ape = ggml_get_rows(ctx, layer.indexer_compressor_ape, pos_ids);
         ape = ggml_reshape_2d(ctx, ape, head_dim, n_ctx_tokens);
@@ -523,6 +525,7 @@ static ggml_tensor * glm5next_moe_ffn(ggml_context * ctx,
 
 ggml_tensor * glm5next_build_graph(
     ggml_context * ctx,
+    ggml_context * const_ctx,
     const Glm5NextWeights & w,
     Glm5NextCache & cache,
     const int32_t * tokens,
@@ -543,7 +546,7 @@ ggml_tensor * glm5next_build_graph(
     const float hc_eps = 1e-6f;
 
     // Input token IDs
-    ggml_tensor * tok_ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_tokens);
+    ggml_tensor * tok_ids = ggml_new_tensor_1d(const_ctx, GGML_TYPE_I32, n_tokens);
     ggml_set_name(tok_ids, "inp_tokens");
     ggml_set_input(tok_ids);
     
@@ -554,7 +557,7 @@ ggml_tensor * glm5next_build_graph(
     // Initialize mHC state: [n_embd, hc, n_tokens]
     // Replicate input across all HC streams
     ggml_tensor * hc_state = ggml_reshape_3d(ctx, inpL, n_embd, 1, n_tokens);
-    ggml_tensor * hc_shape = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n_embd, n_hc, n_tokens);
+    ggml_tensor * hc_shape = ggml_new_tensor_3d(const_ctx, GGML_TYPE_F32, n_embd, n_hc, n_tokens);
     hc_state = ggml_repeat(ctx, hc_state, hc_shape);
     ggml_set_name(hc_state, "hc_init");
 
@@ -580,7 +583,7 @@ ggml_tensor * glm5next_build_graph(
             // mHC pre-attention
             ggml_tensor * cur = nullptr;
             if (layer.hc_attn_fn && layer.hc_attn_base && layer.hc_attn_scale) {
-                cur = glm5next_hc_pre(ctx, hc_state, layer.hc_attn_fn,
+                cur = glm5next_hc_pre(ctx, const_ctx, hc_state, layer.hc_attn_fn,
                                      layer.hc_attn_scale, layer.hc_attn_base,
                                      n_embd, n_hc, sinkhorn_iters, hc_eps,
                                      &post, &comb);
@@ -612,7 +615,7 @@ ggml_tensor * glm5next_build_graph(
             } else if (has_kda) {
                 // KDA linear attention with recurrent state cache
                 const float gate_lower_bound = -5.0f;  // GLM-5.3 gate_lower_bound
-                cur = glm5next_kda_attention(ctx, cur, layer, cache, kda_layer_idx,
+                cur = glm5next_kda_attention(ctx, const_ctx, cur, layer, cache, kda_layer_idx,
                                             n_tokens, n_embd, n_head, head_dim, 
                                             gate_lower_bound);
                 ggml_set_name(cur, ("kda_out_" + std::to_string(il)).c_str());
@@ -631,7 +634,7 @@ ggml_tensor * glm5next_build_graph(
                                                          residual->nb[2], 0);
                 first_stream = ggml_add(ctx, first_stream, cur);
                 hc_state = ggml_reshape_3d(ctx, first_stream, n_embd, 1, n_tokens);
-                ggml_tensor * hc_shape = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n_embd, n_hc, n_tokens);
+                ggml_tensor * hc_shape = ggml_new_tensor_3d(const_ctx, GGML_TYPE_F32, n_embd, n_hc, n_tokens);
                 hc_state = ggml_repeat(ctx, hc_state, hc_shape);
             }
             ggml_set_name(hc_state, ("hc_attn_post_" + std::to_string(il)).c_str());
@@ -646,7 +649,7 @@ ggml_tensor * glm5next_build_graph(
             // mHC pre-FFN
             ggml_tensor * cur = nullptr;
             if (layer.hc_ffn_fn && layer.hc_ffn_base && layer.hc_ffn_scale) {
-                cur = glm5next_hc_pre(ctx, hc_state, layer.hc_ffn_fn,
+                cur = glm5next_hc_pre(ctx, const_ctx, hc_state, layer.hc_ffn_fn,
                                      layer.hc_ffn_scale, layer.hc_ffn_base,
                                      n_embd, n_hc, sinkhorn_iters, hc_eps,
                                      &post, &comb);
@@ -722,7 +725,7 @@ ggml_tensor * glm5next_build_graph(
                                                          residual->nb[2], 0);
                 first_stream = ggml_add(ctx, first_stream, cur);
                 hc_state = ggml_reshape_3d(ctx, first_stream, n_embd, 1, n_tokens);
-                ggml_tensor * hc_shape = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n_embd, n_hc, n_tokens);
+                ggml_tensor * hc_shape = ggml_new_tensor_3d(const_ctx, GGML_TYPE_F32, n_embd, n_hc, n_tokens);
                 hc_state = ggml_repeat(ctx, hc_state, hc_shape);
             }
             ggml_set_name(hc_state, ("l_out_" + std::to_string(il)).c_str());

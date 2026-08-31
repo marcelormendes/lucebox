@@ -188,8 +188,11 @@ bool glm5next_load_weights(const char * model_path,
 struct MoeHybridStorage;
 
 // Graph builder - constructs forward pass computation graph
+// ctx: main graph context (no_alloc=true, for graph structure)
+// const_ctx: constants context (no_alloc=false, for ggml_new_i32/f32)
 ggml_tensor * glm5next_build_graph(
     ggml_context * ctx,
+    ggml_context * const_ctx,
     const Glm5NextWeights & w,
     Glm5NextCache & cache,
     const int32_t * tokens,
