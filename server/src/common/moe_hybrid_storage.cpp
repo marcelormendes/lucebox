@@ -90,13 +90,32 @@ static bool read_expert_slices(ggml_backend_t backend,
         return true;
     }
     out.resize(expert_bytes * expert_ids.size());
+    
+    // Check if tensor has a backend buffer. If not, assume CPU-resident and read directly.
+    ggml_backend_buffer_t buf = ggml_backend_get_buffer(tensor);
+    if (!buf) {
+        // CPU-only tensor: read directly from tensor->data
+        if (!tensor->data) {
+            if (err) *err = "expert tensor has no buffer and no CPU data";
+            return false;
+        }
+        for (size_t i = 0; i < expert_ids.size(); ++i) {
+            const int32_t expert_id = expert_ids[i];
+            const size_t offset = expert_bytes * (size_t)expert_id;
+            std::memcpy(out.data() + expert_bytes * i,
+                       (const uint8_t *)tensor->data + offset,
+                       expert_bytes);
+        }
+        return true;
+    }
+    
+    // Backend-allocated tensor: use ggml_backend_tensor_get
     for (size_t i = 0; i < expert_ids.size(); ++i) {
         const int32_t expert_id = expert_ids[i];
         const size_t offset = expert_bytes * (size_t)expert_id;
         ggml_backend_tensor_get(tensor, out.data() + expert_bytes * i, offset, expert_bytes);
     }
     (void)backend;
-    (void)err;
     return true;
 }
 
