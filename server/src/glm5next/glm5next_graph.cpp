@@ -20,9 +20,6 @@ namespace dflash::common {
 
 namespace {
 
-// Forward declare ggml_can_mul_mat for explicit checking
-extern "C" bool ggml_can_mul_mat(const struct ggml_tensor * t0, const struct ggml_tensor * t1);
-
 // Logging wrapper for ggml_mul_mat with shape diagnostics
 static ggml_tensor * glm5next_mul_mat_logged(ggml_context * ctx, 
                                              ggml_tensor * a, 
@@ -33,9 +30,11 @@ static ggml_tensor * glm5next_mul_mat_logged(ggml_context * ctx,
                  a_name, (long long)a->ne[0], (long long)a->ne[1], (long long)a->ne[2], (long long)a->ne[3], (void*)a,
                  b_name, (long long)b->ne[0], (long long)b->ne[1], (long long)b->ne[2], (long long)b->ne[3], (void*)b);
     
-    // Verify ggml_can_mul_mat with exact pointers being passed
-    bool can_mul = ggml_can_mul_mat(a, b);
-    std::fprintf(stderr, "[glm5next_mul_mat] ggml_can_mul_mat(%p, %p) = %d\n", (void*)a, (void*)b, can_mul);
+    // Inline ggml_can_mul_mat checks (ggml.c:3397-3402: static inline, not exported)
+    bool can_mul = (a->ne[0] == b->ne[0]) &&
+                   (b->ne[2] % a->ne[2] == 0) &&
+                   (b->ne[3] % a->ne[3] == 0);
+    std::fprintf(stderr, "[glm5next_mul_mat] can_mul_mat(%p, %p) = %d\n", (void*)a, (void*)b, can_mul);
     
     if (!can_mul) {
         std::fprintf(stderr, "[glm5next_mul_mat] FAIL: ne[0] match=%d (%lld vs %lld), "
