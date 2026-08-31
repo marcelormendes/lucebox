@@ -81,21 +81,36 @@ if(DFLASH27B_GPU_BACKEND STREQUAL "hip" OR
         set(_dflash_rocm_root "${ROCM_PATH}")
     elseif(DEFINED ENV{ROCM_PATH})
         set(_dflash_rocm_root "$ENV{ROCM_PATH}")
+    elseif(DEFINED ENV{HIP_PATH})
+        set(_dflash_rocm_root "$ENV{HIP_PATH}")
     elseif(EXISTS "/opt/rocm")
         set(_dflash_rocm_root "/opt/rocm")
     else()
         set(_dflash_rocm_root "")
     endif()
+    # Pass ROCM_PATH to ggml-hip subdirectory so find_package(hip/hipblas/rocblas)
+    # never falls back to system /usr paths (avoids mixing HIP 5 + HIP 7).
+    if(_dflash_rocm_root)
+        set(ROCM_PATH "${_dflash_rocm_root}" CACHE PATH "ROCm installation root" FORCE)
+    endif()
 endif()
 # Bake portable rpath into all executables so bundled ggml backend libs / libggml-base
 # are found regardless of LD_LIBRARY_PATH or stale /usr/local/lib (closes #31).
-set(CMAKE_INSTALL_RPATH "$ORIGIN/deps/llama.cpp/ggml/src;$ORIGIN/deps/llama.cpp/ggml/src/ggml-cuda;$ORIGIN/deps/llama.cpp/ggml/src/ggml-hip;$ORIGIN/../deps/llama.cpp/ggml/src;$ORIGIN/../deps/llama.cpp/ggml/src/ggml-cuda;$ORIGIN/../deps/llama.cpp/ggml/src/ggml-hip")
+# For HIP: prepend ROCm lib paths FIRST to prevent mixing system HIP 5 with ROCm 7.
 if((DFLASH27B_GPU_BACKEND STREQUAL "hip" OR
     DFLASH27B_ENABLE_MIXED_CUDA_HIP) AND _dflash_rocm_root)
-    list(APPEND CMAKE_BUILD_RPATH "${_dflash_rocm_root}/lib" "${_dflash_rocm_root}/lib64")
-    set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_RPATH};${_dflash_rocm_root}/lib;${_dflash_rocm_root}/lib64")
+    set(CMAKE_BUILD_RPATH "${_dflash_rocm_root}/lib;${_dflash_rocm_root}/lib64")
+    set(CMAKE_INSTALL_RPATH "${_dflash_rocm_root}/lib;${_dflash_rocm_root}/lib64;$ORIGIN/deps/llama.cpp/ggml/src;$ORIGIN/deps/llama.cpp/ggml/src/ggml-cuda;$ORIGIN/deps/llama.cpp/ggml/src/ggml-hip;$ORIGIN/../deps/llama.cpp/ggml/src;$ORIGIN/../deps/llama.cpp/ggml/src/ggml-cuda;$ORIGIN/../deps/llama.cpp/ggml/src/ggml-hip")
+else()
+    set(CMAKE_INSTALL_RPATH "$ORIGIN/deps/llama.cpp/ggml/src;$ORIGIN/deps/llama.cpp/ggml/src/ggml-cuda;$ORIGIN/deps/llama.cpp/ggml/src/ggml-hip;$ORIGIN/../deps/llama.cpp/ggml/src;$ORIGIN/../deps/llama.cpp/ggml/src/ggml-cuda;$ORIGIN/../deps/llama.cpp/ggml/src/ggml-hip")
 endif()
-set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+# Disable USE_LINK_PATH for HIP to prevent CMake from adding system /usr/lib paths
+# discovered during link (which would bring in Debian libamdhip64.so.5).
+if(DFLASH27B_GPU_BACKEND STREQUAL "hip" OR DFLASH27B_ENABLE_MIXED_CUDA_HIP)
+    set(CMAKE_INSTALL_RPATH_USE_LINK_PATH FALSE)
+else()
+    set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+endif()
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
