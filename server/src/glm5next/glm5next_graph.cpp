@@ -130,13 +130,24 @@ static ggml_tensor * glm5next_hc_pre(ggml_context * ctx,
     flat = ggml_rms_norm(ctx, flat, 1e-6f);
     
     // Ensure both operands are contiguous 2D tensors for mul_mat
-    // hc_fn is [hc_dim, hc_mix_dim] from GGUF (F16)
-    // flat is [hc_dim, nt] after reshape+norm (F32)
-    ggml_tensor * hc_fn_2d = ggml_reshape_2d(ctx, hc_fn, hc_dim, hc_mix_dim);
-    hc_fn_2d = ggml_cont(ctx, hc_fn_2d);
+    // Use actual tensor dimensions, not computed dims (hc_fn is [16384,24], flat is [16384,31])
+    ggml_tensor * hc_fn_2d = ggml_reshape_2d(ctx, hc_fn, hc_fn->ne[0], hc_fn->ne[1]);
+    if (!ggml_is_contiguous(hc_fn_2d)) {
+        hc_fn_2d = ggml_cont(ctx, hc_fn_2d);
+    }
     
-    ggml_tensor * flat_2d = ggml_reshape_2d(ctx, flat, hc_dim, nt);
-    flat_2d = ggml_cont(ctx, flat_2d);
+    ggml_tensor * flat_2d = ggml_reshape_2d(ctx, flat, flat->ne[0], flat->ne[1]);
+    if (!ggml_is_contiguous(flat_2d)) {
+        flat_2d = ggml_cont(ctx, flat_2d);
+    }
+    
+    // Log the exact tensors being passed to mul_mat
+    std::fprintf(stderr, "[glm5next_hc_pre] hc_fn_2d [%lld,%lld,%lld,%lld] ptr=%p\n",
+                 (long long)hc_fn_2d->ne[0], (long long)hc_fn_2d->ne[1], 
+                 (long long)hc_fn_2d->ne[2], (long long)hc_fn_2d->ne[3], (void*)hc_fn_2d);
+    std::fprintf(stderr, "[glm5next_hc_pre] flat_2d [%lld,%lld,%lld,%lld] ptr=%p\n",
+                 (long long)flat_2d->ne[0], (long long)flat_2d->ne[1], 
+                 (long long)flat_2d->ne[2], (long long)flat_2d->ne[3], (void*)flat_2d);
     
     // Mix projection: [hc_mix_dim, nt] = hc_fn_2d^T @ flat_2d
     ggml_tensor * mixes = ggml_mul_mat(ctx, hc_fn_2d, flat_2d);
