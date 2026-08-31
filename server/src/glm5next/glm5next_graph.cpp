@@ -29,6 +29,20 @@ static ggml_tensor * glm5next_mul_mat_logged(ggml_context * ctx,
     std::fprintf(stderr, "[glm5next_mul_mat] %s [%lld,%lld,%lld,%lld] @ %s [%lld,%lld,%lld,%lld]\n",
                  a_name, (long long)a->ne[0], (long long)a->ne[1], (long long)a->ne[2], (long long)a->ne[3],
                  b_name, (long long)b->ne[0], (long long)b->ne[1], (long long)b->ne[2], (long long)b->ne[3]);
+    
+    // Verify ggml_can_mul_mat conditions explicitly
+    bool can_mul = (a->ne[0] == b->ne[0]) &&
+                   (b->ne[2] % a->ne[2] == 0) &&
+                   (b->ne[3] % a->ne[3] == 0);
+    if (!can_mul) {
+        std::fprintf(stderr, "[glm5next_mul_mat] FAIL: ne[0] match=%d (%lld vs %lld), "
+                     "ne[2] broadcast=%d (%lld %% %lld = %lld), "
+                     "ne[3] broadcast=%d (%lld %% %lld = %lld)\n",
+                     a->ne[0] == b->ne[0], (long long)a->ne[0], (long long)b->ne[0],
+                     b->ne[2] % a->ne[2] == 0, (long long)b->ne[2], (long long)a->ne[2], (long long)(b->ne[2] % a->ne[2]),
+                     b->ne[3] % a->ne[3] == 0, (long long)b->ne[3], (long long)a->ne[3], (long long)(b->ne[3] % a->ne[3]));
+    }
+    
     return ggml_mul_mat(ctx, a, b);
 }
 
@@ -114,6 +128,16 @@ static ggml_tensor * glm5next_hc_pre(ggml_context * ctx,
     // DeepseekV4UnweightedRMSNorm: no learned gain
     ggml_tensor * flat = ggml_reshape_2d(ctx, hc_state, hc_dim, nt);
     flat = ggml_rms_norm(ctx, flat, 1e-6f);
+    
+    // Debug: verify actual tensor shapes and strides before mul_mat
+    std::fprintf(stderr, "[glm5next_hc_pre] hc_fn ne=[%lld,%lld,%lld,%lld] nb=[%zu,%zu,%zu,%zu] transposed=%d\n",
+                 (long long)hc_fn->ne[0], (long long)hc_fn->ne[1], (long long)hc_fn->ne[2], (long long)hc_fn->ne[3],
+                 hc_fn->nb[0], hc_fn->nb[1], hc_fn->nb[2], hc_fn->nb[3],
+                 hc_fn->nb[0] > hc_fn->nb[1]);
+    std::fprintf(stderr, "[glm5next_hc_pre] flat ne=[%lld,%lld,%lld,%lld] nb=[%zu,%zu,%zu,%zu] transposed=%d\n",
+                 (long long)flat->ne[0], (long long)flat->ne[1], (long long)flat->ne[2], (long long)flat->ne[3],
+                 flat->nb[0], flat->nb[1], flat->nb[2], flat->nb[3],
+                 flat->nb[0] > flat->nb[1]);
     
     // Mix projection
     ggml_tensor * mixes = glm5next_mul_mat_logged(ctx, hc_fn, flat, "hc_fn", "hc_flat");
