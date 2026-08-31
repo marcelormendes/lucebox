@@ -596,15 +596,14 @@ ggml_tensor * glm5next_build_graph(
             ggml_set_name(cur, ("attn_norm_" + std::to_string(il)).c_str());
             
             // Attention: KDA or MLA - detect based on which tensors are present
-            bool has_mla = layer.attn_q_a && layer.attn_q_b && layer.attn_wk_b && layer.attn_wv_b;
-            bool has_kda = layer.kda_f_a && layer.kda_f_b && layer.kda_g_a && layer.kda_g_b;
+            // attn_wo must also be present for actual attention computation
+            bool has_mla = layer.attn_q_a && layer.attn_q_b && layer.attn_wk_b && 
+                          layer.attn_wv_b && layer.attn_wo;
+            bool has_kda = layer.kda_f_a && layer.kda_f_b && layer.kda_g_a && 
+                          layer.kda_g_b && layer.attn_wo;
             
             if (has_mla) {
                 // MLA sparse attention with IndexPool DSA + KV cache
-                if (!layer.attn_wo) {
-                    std::fprintf(stderr, "[glm5next_graph] layer %d has MLA but missing attn_wo\n", il);
-                    return nullptr;
-                }
                 cur = glm5next_mla_attention(ctx, cur, layer, cache, mla_layer_idx,
                                             n_tokens, n_embd, n_head, head_dim,
                                             head_dim, w.index_topk, w.kpool);
@@ -612,10 +611,6 @@ ggml_tensor * glm5next_build_graph(
                 mla_layer_idx++;
             } else if (has_kda) {
                 // KDA linear attention with recurrent state cache
-                if (!layer.attn_wo) {
-                    std::fprintf(stderr, "[glm5next_graph] layer %d has KDA but missing attn_wo\n", il);
-                    return nullptr;
-                }
                 const float gate_lower_bound = -5.0f;  // GLM-5.3 gate_lower_bound
                 cur = glm5next_kda_attention(ctx, cur, layer, cache, kda_layer_idx,
                                             n_tokens, n_embd, n_head, head_dim, 
@@ -623,8 +618,8 @@ ggml_tensor * glm5next_build_graph(
                 ggml_set_name(cur, ("kda_out_" + std::to_string(il)).c_str());
                 kda_layer_idx++;
             } else {
-                // No attention tensors - skip attention sublayer (e.g. MTP draft head layer)
-                std::fprintf(stderr, "[glm5next_graph] layer %d has no attention tensors, skipping attn\n", il);
+                // No attention tensors - skip attention sublayer (e.g. MTP draft head or dense-only layer)
+                std::fprintf(stderr, "[glm5next_graph] layer %d has no complete attention tensors, skipping attn\n", il);
             }
             
             // mHC post-attention
