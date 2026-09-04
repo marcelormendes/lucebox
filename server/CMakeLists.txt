@@ -393,6 +393,21 @@ if(DFLASH27B_DS4_MIX_CONVERTER)
     endif()
 endif()
 
+# Native DeepSeek-V4 vision projector.  This target is deliberately separate
+# from dflash_common so the CPU qualification probe can link the reusable tower
+# without pulling in the decoder, HTTP server, or GPU model path.
+add_library(dflash_ds4v_vision STATIC
+    src/deepseek4/deepseek4_vision.cpp)
+target_include_directories(dflash_ds4v_vision PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include)
+target_link_libraries(dflash_ds4v_vision PUBLIC ggml ggml-base)
+
+add_executable(ds4v_vision_probe
+    tools/ds4v_vision/main.cpp)
+target_link_libraries(ds4v_vision_probe PRIVATE
+    dflash_ds4v_vision ggml-cpu)
+
 if(DFLASH27B_MIXED_GGML_SHARED)
     if(_dflash_build_shared_libs_was_defined)
         set(BUILD_SHARED_LIBS "${_dflash_saved_build_shared_libs}")
@@ -903,6 +918,11 @@ option(DFLASH27B_SERVER "Build dflash_server + backend_ipc_daemon" ON)
 if(DFLASH27B_TESTS)
     set(_raw_unit_test_targets)
     enable_testing()
+
+    add_executable(test_ds4v_vision test/test_ds4v_vision.cpp)
+    target_link_libraries(test_ds4v_vision PRIVATE
+        dflash_ds4v_vision ggml-cpu)
+    add_test(NAME ds4v_vision_geometry COMMAND test_ds4v_vision)
 
     # Header-only platform shims must remain independently buildable and
     # runnable on hosted Windows workers without a GPU.
