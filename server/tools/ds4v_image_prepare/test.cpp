@@ -46,6 +46,12 @@ static void compare(const Composition & result,size_t index,const fs::path & roo
     const auto & item=result.prepared.images[index];
     check(result.decoded[index].pixels==read<uint8_t>(root/label/"input.rgb"),"decoded RGB differs from source");
     check(item.input.patches_bf16==read<uint16_t>(root/label/"patches.bf16"),"BF16 patches differ from source");
+    check(result.decoded[index].width==(label=="corn"?450U:1024U) &&
+          result.decoded[index].height==(label=="corn"?308U:701U),"source decoded dimensions");
+    check(item.input.plan.vit_rows==(label=="corn"?23U:42U) &&
+          item.input.plan.vit_cols==(label=="corn"?34U:61U) &&
+          item.input.plan.aligner_rows==(label=="corn"?8U:14U) &&
+          item.input.plan.aligner_cols==(label=="corn"?12U:21U),"source patch/aligner dimensions");
     const auto start=item.layout.span.block_begin;
     const int residue=static_cast<int>(start%4);
     const auto types=read<int64_t>(root/label/("types-"+std::to_string(residue)+".i64"));
@@ -61,6 +67,11 @@ static void compare(const Composition & result,size_t index,const fs::path & roo
     check(item.layout.span.visible_begin==start+static_cast<size_t>(first-types.begin()) &&
           item.layout.span.visible_end==start+static_cast<size_t>(last-types.begin())+1 &&
           item.layout.span.block_end==start+types.size(),"source span mismatch");
+    std::cout<<label<<" decoded="<<result.decoded[index].width<<'x'<<result.decoded[index].height
+             <<" patches="<<item.input.plan.vit_rows<<'x'<<item.input.plan.vit_cols
+             <<" aligner="<<item.input.plan.aligner_rows<<'x'<<item.input.plan.aligner_cols
+             <<" block=["<<start<<','<<item.layout.span.block_end<<") visible=["
+             <<item.layout.span.visible_begin<<','<<item.layout.span.visible_end<<")\n";
 }
 static void failure(const Composition & result,const char * category) {
     check(!result && result.error.find(category)!=std::string::npos,"wrong failure category");
