@@ -15,6 +15,8 @@ manifest = json.loads((a.reference / 'manifest.json').read_text())
 results = {}
 for label, entry in manifest['images'].items():
     results[label] = {}
+    patches = entry['patches']
+    assert hashlib.sha256((a.reference / patches['file']).read_bytes()).hexdigest() == patches['sha256']
     for stage in ('features', 'embeddings'):
         meta = entry[stage]
         reference_path = a.reference / meta['file']
