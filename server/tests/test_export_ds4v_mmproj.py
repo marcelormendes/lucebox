@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-import importlib
 import importlib.util
 import json
 import struct
 import sys
 import tempfile
-import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -156,27 +154,14 @@ class ExportDs4vMmprojTest(unittest.TestCase):
                 self.assertEqual(raw[data_start + offset:data_start + offset + len(payloads[name])], payloads[name])
 
     def test_vendored_gguf_reader_accepts_output(self):
-        gguf_path = REPO_ROOT / "server" / "deps" / "llama.cpp" / "gguf-py" / "gguf"
+        gguf_path = REPO_ROOT / "server" / "deps" / "llama.cpp" / "gguf-py"
+        sys.path.insert(0, str(gguf_path))
         try:
-            import numpy  # noqa: F401
+            import gguf
         except ImportError as exc:
             self.skipTest("vendored GGUF reader dependency unavailable: %s" % exc)
-
-        saved_modules = {name: module for name, module in sys.modules.items()
-                         if name == "gguf" or name.startswith("gguf.")}
-        for name in saved_modules:
-            del sys.modules[name]
-        package = types.ModuleType("gguf")
-        package.__path__ = [str(gguf_path)]
-        sys.modules["gguf"] = package
-        try:
-            gguf_reader = importlib.import_module("gguf.gguf_reader")
         finally:
-            loaded_modules = [name for name in sys.modules
-                              if name == "gguf" or name.startswith("gguf.")]
-            for name in loaded_modules:
-                del sys.modules[name]
-            sys.modules.update(saved_modules)
+            sys.path.pop(0)
 
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -184,7 +169,7 @@ class ExportDs4vMmprojTest(unittest.TestCase):
             output = root / "vision.gguf"
             self.export_small(make_source(root, entries, payload), output)
 
-            reader = gguf_reader.GGUFReader(output)
+            reader = gguf.GGUFReader(output)
             self.assertEqual(reader.get_field("general.architecture").contents(), "deepseek4_vision")
             self.assertEqual(len(reader.tensors), len(TEST_SHAPES))
             for tensor in reader.tensors:
