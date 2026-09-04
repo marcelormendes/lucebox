@@ -36,6 +36,14 @@ int main(int argc,char ** argv) {
         if(!runtime.load(argv[1],backend,dimension,vocabulary,error)) throw std::runtime_error(error);
         std::cout<<"weights_bytes="<<runtime.weight_bytes()<<"\n";
         if(!load_only) {
+            for(const auto & check:std::vector<std::pair<PatchGrid,bool>>{
+                    {{48,72},false}, {{3,564},false}, {{6,564},false},
+                    {{3,3},true}, {{3,561},true}, {{6,561},true}, {{564,3},true}}) {
+                VisionOutput rejected;
+                if(runtime.encode({},check.first,rejected,error)) throw std::runtime_error("empty patches accepted");
+                const auto expected=check.second?"patch count/shape mismatch":"patch grid exceeds image token budget";
+                if(error!=expected) throw std::runtime_error("grid budget check: expected "+std::string(expected)+", got "+error);
+            }
             if(runtime.load(argv[1],backend,4095,129280,error)) throw std::runtime_error("incompatible reload accepted");
             if(!runtime.config() || runtime.weight_bytes()==0) throw std::runtime_error("failed reload destroyed runtime");
             std::vector<float> sentinel_after_reload;
