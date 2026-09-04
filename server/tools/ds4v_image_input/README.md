@@ -14,8 +14,9 @@ the parent's `<｜deepseek_image｜>` placeholder for each image. It returns own
 JPEG/PNG bytes separately. Defaults are16MiB per encoded image,32MiB aggregate,
 and four images. These limits count image bytes after base64 decoding, before
 pixel decoding. Output is cleared on failure and input JSON is unchanged.
-Literal image placeholders in text/reasoning are rejected, including placeholders
-split across adjacent text parts. Images in other message roles are rejected.
+Literal image placeholders in all message string values are rejected, including
+tool-call fields and placeholders split across adjacent text parts. Message nesting
+is limited to64levels by an iterative walk before copying JSON. Images in other message roles are rejected.
 The standard `detail` values are accepted; source preprocessing uses its fixed
 model recipe for all three values.
 
@@ -23,7 +24,7 @@ Only base64 data URLs are supported in this first unit. Remote HTTP(S), filesyst
 paths, other media types, and other APIs' image part schemas fail explicitly.
 Text-only message arrays preserve their JSON representation.
 
-`redact_image_urls` replaces image_url fields before a caller serializes status
+`redact_image_urls` iteratively replaces image_url fields before a caller serializes status
 or diagnostic JSON. Request integration must invoke it before dumping messages
 or raw bodies. This helper alone does not prove that a live server is redacted.
 

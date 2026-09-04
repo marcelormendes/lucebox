@@ -20,6 +20,20 @@ bool reserved_placeholder(std::string_view text) {
 void require(bool valid, const char * message) {
     if (!valid) throw std::invalid_argument(message);
 }
+void validate_message_structure(const nlohmann::json & messages) {
+    std::vector<std::pair<const nlohmann::json *, size_t>> pending{{&messages, 0}};
+    while (!pending.empty()) {
+        const auto [value, depth] = pending.back();
+        pending.pop_back();
+        require(depth <= 64, "image message nesting exceeds 64 levels");
+        if (value->is_string()) {
+            require(!reserved_placeholder(value->get_ref<const std::string &>()),
+                    "text contains the reserved image placeholder");
+        } else if (value->is_structured()) {
+            for (const auto & child : *value) pending.emplace_back(&child, depth + 1);
+        }
+    }
+}
 }
 
 bool parse_image_data_url(std::string_view url, EncodedImage & image,
@@ -89,22 +103,14 @@ bool extract_chat_images(const nlohmann::json & messages, nlohmann::json & norma
     error.clear();
     try {
         require(messages.is_array(), "image messages must be an array");
+        validate_message_structure(messages);
         nlohmann::json result = messages;
         std::vector<EncodedImage> collected;
         size_t total_bytes = 0;
         for (auto & message : result) {
             require(message.is_object(), "each image message must be an object");
-            if (message.contains("reasoning_content") && message["reasoning_content"].is_string()) {
-                require(!reserved_placeholder(message["reasoning_content"].get_ref<const std::string &>()),
-                        "text contains the reserved image placeholder");
-            }
             if (!message.contains("content")) continue;
             auto & content = message["content"];
-            if (content.is_string()) {
-                require(!reserved_placeholder(content.get_ref<const std::string &>()),
-                        "text contains the reserved image placeholder");
-                continue;
-            }
             if (!content.is_array()) continue;
             std::string text_segment;
             for (auto & part : content) {
@@ -156,13 +162,18 @@ bool extract_chat_images(const nlohmann::json & messages, nlohmann::json & norma
 }
 
 void redact_image_urls(nlohmann::json & value) {
-    if (value.is_object()) {
-        for (auto & item : value.items()) {
-            if (item.key() == "image_url") item.value() = "[image omitted]";
-            else redact_image_urls(item.value());
+    std::vector<nlohmann::json *> pending{&value};
+    while (!pending.empty()) {
+        auto * current = pending.back();
+        pending.pop_back();
+        if (current->is_object()) {
+            for (auto & item : current->items()) {
+                if (item.key() == "image_url") item.value() = "[image omitted]";
+                else pending.push_back(&item.value());
+            }
+        } else if (current->is_array()) {
+            for (auto & item : *current) pending.push_back(&item);
         }
-    } else if (value.is_array()) {
-        for (auto & item : value) redact_image_urls(item);
     }
 }
 } // namespace dflash::common
