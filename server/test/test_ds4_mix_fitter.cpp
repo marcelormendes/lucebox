@@ -2,7 +2,7 @@
 #include "../tools/ds4_mix_converter/ds4_mix_converter.cpp"
 #undef main
 
-int main() {
+int main(int argc, char ** argv) {
     try {
         for (float value : {0.0f, -1.0f, 1.0f}) {
             HistogramFitter fitter;
@@ -48,6 +48,24 @@ int main() {
         bool rejected = false;
         try { HistogramFitter().fit(4); } catch (const std::runtime_error &) { rejected = true; }
         if (!rejected) fail("empty histogram accepted");
+        if (argc != 1 && argc != 5) fail("usage: test_ds4_mix_fitter [SOURCE IMATRIX LAYER EXPERT]");
+        if (argc == 5) {
+            SafeTensorSet source(argv[1]);
+            std::optional<Imatrix> imatrix = load_imatrix(argv[2]);
+            const int layer = parse_nonnegative(argv[3], "layer");
+            const int expert = parse_nonnegative(argv[4], "expert");
+            HistogramFitter gate_up, down;
+            for (const auto & recipe : kExpertRecipes) {
+                const auto shape = validate_expert_source(source, layer, expert, recipe);
+                const auto * importance = require_imatrix(imatrix, target_expert_name(layer, recipe), shape.in);
+                add_expert_to_fitter(source, layer, expert, recipe, importance,
+                    recipe.books == BookSource::GateUpJoint ? gate_up : down);
+            }
+            const std::string label = "layer=" + std::to_string(layer) + " expert=" + std::to_string(expert);
+            gate_up.fit(kGuLevels, label + " gate_up");
+            down.fit(kP4Levels, label + " down");
+            std::cout << "PASS: source replay " << label << "\n";
+        }
         std::cout << "PASS: degenerate fitter, BF16 ordering, determinism, codec acceptance, empty rejection\n";
         return 0;
     } catch (const std::exception & e) {
