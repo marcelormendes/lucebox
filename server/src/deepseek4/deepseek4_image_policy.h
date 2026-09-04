@@ -15,6 +15,7 @@ struct ImageExpertSelection {
 };
 
 // Scores are unbiased sqrt(softplus(logits)); bias affects selection only.
+// Input arrays contain experts readable floats and do not alias output.
 // Equal corrected scores select lower expert indices first. Torch topk does
 // not specify equal-score ordering, so tie parity is not part of this contract.
 bool select_image_experts(const float * scores, const float * bias, size_t experts,
