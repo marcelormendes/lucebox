@@ -41,6 +41,9 @@ public:
     bool encode(const std::vector<float> & channel_major_patches, PatchGrid grid,
                 VisionOutput & output, std::string & error, bool retain_features = false,
                 const StageObserver & observer = {});
+    // Diagnostic branch only: execute one frozen-candidate block from an exact residual.
+    bool diagnose_block(const std::vector<float> & residual, PatchGrid grid, int layer,
+                        std::vector<float> & output, std::string & error, const StageObserver & observer);
     bool sentinel(Sentinel identity, std::vector<float> & output, std::string & error) const;
     void release_scratch();
     const VisionConfig * config() const;

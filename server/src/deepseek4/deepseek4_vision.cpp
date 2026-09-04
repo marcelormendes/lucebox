@@ -324,6 +324,80 @@ bool VisionRuntime::encode(const std::vector<float> & patches,PatchGrid grid,Vis
         return true;
     } catch(const std::exception & e) { error=e.what(); return false; }
 }
+bool VisionRuntime::diagnose_block(const std::vector<float> & values,PatchGrid grid,int layer,
+                                    std::vector<float> & output,std::string & error,const StageObserver & observer) {
+    error.clear(); output.clear();
+    try {
+        require(impl_ && observer,"loaded runtime and observer required");
+        require(grid.height==23 && grid.width==34 && (layer==12 || layer==31),"bounded diagnostic accepts only corn blocks12/31");
+        const int64_t n=grid.height*grid.width;
+        require(values.size()==size_t(n)*1024,"wrong residual size");
+        Graph g;
+        auto c=g.c;
+        auto tap=[&](const std::string & name,Tensor * t) { g.stage(name,t,true); return t; };
+        auto linear=[&](Tensor * x,const std::string & name,const std::string & stage,bool bias=true) {
+            auto y=ggml_mul_mat(c,impl_->weight(name+".weight"),x);
+            ggml_mul_mat_set_prec(y,GGML_PREC_F32);
+            tap(stage+".dot_f32",y);
+            if(bias) y=ggml_add(c,y,ggml_cast(c,impl_->weight(name+".bias"),GGML_TYPE_F32));
+            tap(stage+".f32",y);
+            return tap(stage,rounded(c,y));
+        };
+        auto norm=[&](Tensor * x,const std::string & name,const std::string & stage) {
+            auto rms=tap(stage+".rms_f32",ggml_rms_norm(c,x,impl_->config.rms_epsilon));
+            auto y=tap(stage+".f32",ggml_mul(c,rms,ggml_cast(c,impl_->weight(name+".weight"),GGML_TYPE_F32)));
+            return tap(stage,rounded(c,y));
+        };
+        const auto p="vision.blocks."+std::to_string(layer);
+        auto input=ggml_new_tensor_2d(c,GGML_TYPE_F32,1024,n);
+        tap("input",input);
+        std::vector<float> cos_values,sin_values;
+        detail::rotary_tables(grid,cos_values,sin_values);
+        auto cosine=ggml_new_tensor_3d(c,GGML_TYPE_F32,32,1,n);
+        auto sine=ggml_new_tensor_3d(c,GGML_TYPE_F32,32,1,n);
+        ggml_set_input(cosine); ggml_set_input(sine);
+        tap("cosine",cosine); tap("sine",sine);
+        auto normalized=norm(input,p+".norm1","norm1");
+        auto qkv=linear(normalized,p+".attn.wqkv","qkv");
+        auto slice=[&](int offset) {
+            return ggml_cont(c,ggml_view_3d(c,qkv,64,16,n,64*sizeof(float),3072*sizeof(float),offset*1024*sizeof(float)));
+        };
+        auto q_raw=tap("q_raw",slice(0)),k_raw=tap("k_raw",slice(1)),v=tap("v",slice(2));
+        auto q=tap("q",detail::rotate(c,q_raw,cosine,sine));
+        auto k=tap("k",detail::rotate(c,k_raw,cosine,sine));
+        q=ggml_cont(c,ggml_permute(c,q,0,2,1,3));
+        k=ggml_cont(c,ggml_permute(c,k,0,2,1,3));
+        const float scale=float(std::sqrt(1.0/std::sqrt(double(q->ne[0]))));
+        auto scaled_k=tap("k_scaled",ggml_scale(c,k,scale));
+        auto scaled_q=tap("q_scaled",ggml_scale(c,q,scale));
+        auto scores=ggml_mul_mat(c,scaled_k,scaled_q);
+        ggml_mul_mat_set_prec(scores,GGML_PREC_F32);
+        tap("qk",scores);
+        auto probabilities=tap("softmax",ggml_soft_max(c,scores));
+        auto vt=ggml_cont(c,ggml_permute(c,v,1,2,0,3));
+        auto pv=ggml_mul_mat(c,vt,probabilities);
+        ggml_mul_mat_set_prec(pv,GGML_PREC_F32);
+        tap("pv_f32",pv);
+        auto attention_ordered=ggml_cont(c,ggml_permute(c,pv,0,2,1,3));
+        auto attention=tap("attention",rounded(c,ggml_reshape_2d(c,attention_ordered,1024,n)));
+        auto projected=linear(attention,p+".attn.wo","projection");
+        auto residual_f32=tap("residual1.f32",ggml_add(c,input,projected));
+        auto residual=tap("residual1",rounded(c,residual_f32));
+        auto norm2=norm(residual,p+".norm2","norm2");
+        auto mlp=linear(norm2,p+".mlp.w1","w1",false);
+        auto gate=tap("gate",ggml_cont(c,ggml_view_2d(c,mlp,2816,n,5632*sizeof(float),0)));
+        auto up=tap("up",ggml_view_2d(c,mlp,2816,n,5632*sizeof(float),2816*sizeof(float)));
+        auto silu_f32=tap("silu.f32",ggml_silu(c,gate));
+        auto silu=tap("silu",rounded(c,silu_f32));
+        auto product_f32=tap("product.f32",ggml_mul(c,silu,up));
+        auto product=tap("product",rounded(c,product_f32));
+        auto down=linear(product,p+".mlp.w2","w2",false);
+        auto final_f32=tap("output.f32",ggml_add(c,residual,down));
+        auto final=tap("output",rounded(c,final_f32));
+        output=impl_->execute(g,input,values,final,observer,cosine,sine,cos_values,sin_values);
+        return true;
+    } catch(const std::exception & e) { error=e.what(); return false; }
+}
 bool VisionRuntime::sentinel(Sentinel identity,std::vector<float> & output,std::string & error) const {
     error.clear(); output.clear();
     if(!impl_) { error="vision runtime is not loaded"; return false; }
