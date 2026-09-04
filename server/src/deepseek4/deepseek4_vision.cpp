@@ -129,9 +129,13 @@ Tensor * rotate(ggml_context * c,Tensor * x,Tensor * cosine,Tensor * sine) {
 Tensor * attention(ggml_context * c,Tensor * q,Tensor * k,Tensor * v) {
     q=ggml_cont(c,ggml_permute(c,q,0,2,1,3));
     k=ggml_cont(c,ggml_permute(c,k,0,2,1,3));
-    auto scores=ggml_mul_mat(c,k,q);
+    // PyTorch 2.10 Math SDPA (the source's 3D input dispatch) scales both
+    // operands in F32 before GEMM. Preserve this order and its rounding;
+    // scaling the scores afterwards is algebraically equal but not bit equal.
+    const float scale=float(std::sqrt(1.0/std::sqrt(double(q->ne[0]))));
+    auto scores=ggml_mul_mat(c,ggml_scale(c,k,scale),ggml_scale(c,q,scale));
     ggml_mul_mat_set_prec(scores,GGML_PREC_F32);
-    auto probabilities=ggml_soft_max(c,ggml_scale(c,scores,1.f/std::sqrt(float(q->ne[0]))));
+    auto probabilities=ggml_soft_max(c,scores);
     v=ggml_cont(c,ggml_permute(c,v,1,2,0,3)); // [N, D, heads]
     auto out=ggml_mul_mat(c,v,probabilities);
     ggml_mul_mat_set_prec(out,GGML_PREC_F32);
