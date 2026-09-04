@@ -176,6 +176,7 @@ struct VisionRuntime::Impl {
         require(required<=MAX_SCRATCH,"vision scratch exceeds 2 GiB bound");
         for(int i=0;i<ggml_graph_n_nodes(g.graph);++i)
             require(ggml_backend_supports_op(backend,ggml_graph_node(g.graph,i)),"backend does not support vision graph operation");
+        require(ggml_gallocr_reserve(allocator,g.graph),"scratch reservation failed");
         require(ggml_gallocr_alloc_graph(allocator,g.graph),"scratch allocation failed");
         ggml_backend_tensor_set(input,values.data(),0,values.size()*sizeof(float));
         if(cosine) {
