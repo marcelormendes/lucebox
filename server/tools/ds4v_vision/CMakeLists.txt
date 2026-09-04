@@ -11,6 +11,16 @@ set(GGML_BLAS OFF CACHE BOOL "" FORCE)
 set(GGML_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 add_subdirectory(../../deps/llama.cpp/ggml ggml)
+if(DS4V_VISION_HIP)
+    target_compile_definitions(ggml-hip PRIVATE
+        cublasSgemmStridedBatched=hipblasSgemmStridedBatched
+        cudaStreamCaptureStatus=hipStreamCaptureStatus
+        cudaStreamCaptureStatusNone=hipStreamCaptureStatusNone
+        cudaStreamIsCapturing=hipStreamIsCapturing)
+    target_include_directories(ggml-hip BEFORE PRIVATE ../../src/hip_compat)
+    get_filename_component(DS4V_HIP_RUNTIME_DIR "${hip_DIR}/../.." ABSOLUTE)
+    target_link_options(ggml-hip PRIVATE "-L${DS4V_HIP_RUNTIME_DIR}")
+endif()
 add_library(ds4v_vision STATIC ../../src/deepseek4/deepseek4_vision.cpp)
 target_include_directories(ds4v_vision PUBLIC ../../src)
 target_link_libraries(ds4v_vision PUBLIC ggml)
