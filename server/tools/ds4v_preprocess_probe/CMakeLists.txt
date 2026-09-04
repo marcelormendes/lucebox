@@ -13,18 +13,31 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 if(DS4V_PREPROCESS_WITH_CODECS)
+    include(ExternalProject)
     include(FetchContent)
 
-    set(ENABLE_SHARED OFF CACHE BOOL "" FORCE)
-    set(ENABLE_STATIC ON CACHE BOOL "" FORCE)
-    set(WITH_TOOLS OFF CACHE BOOL "" FORCE)
-    set(WITH_TESTS OFF CACHE BOOL "" FORCE)
-    set(WITH_SIMD OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(libjpeg_turbo
+    set(DS4V_JPEG_PREFIX ${CMAKE_CURRENT_BINARY_DIR}/libjpeg-turbo-prefix)
+    file(MAKE_DIRECTORY ${DS4V_JPEG_PREFIX}/include)
+    ExternalProject_Add(libjpeg_turbo_external
         URL https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.1.4.1/libjpeg-turbo-3.1.4.1.tar.gz
         URL_HASH SHA256=ecae8008e2cc9ade2f2c1bb9d5e6d4fb73e7c433866a056bd82980741571a022
-        DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
-    FetchContent_MakeAvailable(libjpeg_turbo)
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        CMAKE_ARGS
+            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_INSTALL_PREFIX=${DS4V_JPEG_PREFIX}
+            -DCMAKE_INSTALL_LIBDIR=lib
+            -DENABLE_SHARED=OFF
+            -DENABLE_STATIC=ON
+            -DWITH_TOOLS=OFF
+            -DWITH_TESTS=OFF
+            -DWITH_SIMD=OFF
+        BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --parallel 2
+        BUILD_BYPRODUCTS ${DS4V_JPEG_PREFIX}/lib/libjpeg.a)
+    add_library(ds4v_libjpeg STATIC IMPORTED GLOBAL)
+    set_target_properties(ds4v_libjpeg PROPERTIES
+        IMPORTED_LOCATION ${DS4V_JPEG_PREFIX}/lib/libjpeg.a
+        INTERFACE_INCLUDE_DIRECTORIES ${DS4V_JPEG_PREFIX}/include)
+    add_dependencies(ds4v_libjpeg libjpeg_turbo_external)
 
     FetchContent_Declare(lodepng
         URL https://github.com/lvandeve/lodepng/archive/ed6fe5825c6a4fbb7f58ab35a4231c7543cd452a.tar.gz
@@ -36,11 +49,8 @@ if(DS4V_PREPROCESS_WITH_CODECS)
 
     target_sources(ds4v_preprocess_probe PRIVATE
         ../../src/deepseek4/deepseek4_vision_decode.cpp)
-    target_include_directories(ds4v_preprocess_probe PRIVATE
-        ${libjpeg_turbo_SOURCE_DIR}
-        ${libjpeg_turbo_BINARY_DIR})
     target_compile_definitions(ds4v_preprocess_probe PRIVATE DS4V_PREPROCESS_WITH_CODECS=1)
-    target_link_libraries(ds4v_preprocess_probe PRIVATE jpeg-static ds4v_lodepng)
+    target_link_libraries(ds4v_preprocess_probe PRIVATE ds4v_libjpeg ds4v_lodepng)
 endif()
 
 enable_testing()
