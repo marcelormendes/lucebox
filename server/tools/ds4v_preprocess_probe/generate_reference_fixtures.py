@@ -94,6 +94,25 @@ def main() -> int:
         image.save(encoded, format="PNG")
         cases.append((label, image, encoded.getvalue()))
 
+    rgba_rgb = np.frombuffer(pattern(29, 17, 211), dtype=np.uint8).reshape(17, 29, 3)
+    alpha = ((np.indices((17, 29), dtype=np.uint16).sum(axis=0) * 23) % 256).astype(np.uint8)
+    rgba = Image.fromarray(np.dstack((rgba_rgb, alpha)))
+    encoded_rgba = io.BytesIO()
+    rgba.save(encoded_rgba, format="PNG")
+    with Image.open(io.BytesIO(encoded_rgba.getvalue())) as opened:
+        expected_rgba_rgb = opened.convert("RGB")
+    cases.append(("png-rgba", expected_rgba_rgb, encoded_rgba.getvalue()))
+
+    jpeg_source = Image.frombytes("RGB", (19, 11), pattern(19, 11, 233))
+    exif = Image.Exif()
+    exif[274] = 6
+    encoded_jpeg = io.BytesIO()
+    jpeg_source.save(encoded_jpeg, format="JPEG", quality=91, exif=exif)
+    with Image.open(io.BytesIO(encoded_jpeg.getvalue())) as opened:
+        expected_jpeg_rgb = opened.convert("RGB")
+    assert expected_jpeg_rgb.size == (19, 11), "source unexpectedly transposed EXIF orientation"
+    cases.append(("jpeg-exif", expected_jpeg_rgb, encoded_jpeg.getvalue()))
+
     for label in ("carrots", "corn"):
         encoded = (args.source / "inference/examples/images" / f"{label}.jpeg").read_bytes()
         with Image.open(io.BytesIO(encoded)) as opened:

@@ -19,7 +19,7 @@ ctest --test-dir build --output-on-failure
 ./build/ds4v_preprocess_probe --fixtures /tmp/ds4v-preprocess-fixtures
 ```
 
-The fixture check compares JPEG/PNG decoded RGB, resized RGB bytes, BF16 patch words, dimensions, all five grounded start-position layouts, permutations, spans, and second deterministic decode and preprocessing runs. The built-in self-test covers malformed and truncated JPEG/PNG, unsupported formats, encoded and decoded bounds, invalid fixed config, invalid decoded dimensions, wrong RGB byte counts, output bounds, layout budget overflow, and absolute-position overflow.
+The fixture check compares JPEG/PNG decoded RGB, including PNG alpha removal and a JPEG EXIF orientation that must not be transposed, resized RGB bytes, BF16 patch words, dimensions, all five grounded start-position layouts, permutations, spans, and second deterministic decode and preprocessing runs. The built-in self-test covers malformed and truncated JPEG/PNG, unsupported formats, encoded and decoded bounds, invalid fixed config, invalid decoded dimensions, wrong RGB byte counts, output bounds, layout budget overflow, and absolute-position overflow.
 
 The production boundary remains split: `decode_image` owns bounded JPEG/PNG byte decoding, while `preprocess_rgb` accepts already decoded interleaved RGB and has no image-codec or Python runtime dependency. Configure with `-DDS4V_PREPROCESS_WITH_CODECS=OFF` to build and test the RGB unit without downloading codec dependencies.
 
