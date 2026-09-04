@@ -354,7 +354,7 @@ def _pack_metadata_entry(key: str, kind: str, value: object) -> bytes:
         result += struct.pack("<I", GGUF_TYPE_STRING)
         result += _pack_string(str(value))
     elif kind == "float32_array":
-        values = tuple(float(item) for item in value)  # type: ignore[arg-type]
+        values = tuple(float(item) for item in value)
         result += struct.pack("<IIQ", GGUF_TYPE_ARRAY, GGUF_TYPE_FLOAT32, len(values))
         result += struct.pack("<%df" % len(values), *values)
     else:

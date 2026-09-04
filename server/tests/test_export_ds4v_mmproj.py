@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-"""Focused synthetic tests for the lossless DS4V mmproj exporter."""
-
 import importlib.util
 import json
 import struct
@@ -77,7 +75,6 @@ def read_string(handle):
 
 
 def read_gguf(path):
-    """Small test-only parser, separate from the production writer."""
     metadata = {}
     infos = []
     with path.open("rb") as handle:
