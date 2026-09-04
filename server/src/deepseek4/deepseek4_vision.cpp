@@ -344,9 +344,15 @@ ggml_tensor * explicit_attention(ggml_context * ctx,
                                  int64_t tokens) {
     ggml_tensor * q_head = ggml_cont(ctx, ggml_permute(ctx, q, 0, 2, 1, 3));
     ggml_tensor * k_head = ggml_cont(ctx, ggml_permute(ctx, k, 0, 2, 1, 3));
+    // aten::_scaled_dot_product_attention_math pre-scales both operands by
+    // sqrt(1/sqrt(D)) before its F32 QK matmul.  Preserve that operation order;
+    // post-scaling the score matrix is only equivalent in exact arithmetic.
+    const float operand_scale = std::sqrt(
+        1.0f / std::sqrt(static_cast<float>(head_dim)));
+    q_head = ggml_scale(ctx, q_head, operand_scale);
+    k_head = ggml_scale(ctx, k_head, operand_scale);
     ggml_tensor * scores = ggml_mul_mat(ctx, k_head, q_head);
-    ggml_tensor * probabilities = ggml_soft_max_ext(
-        ctx, scores, nullptr, 1.0f / std::sqrt(static_cast<float>(head_dim)), 0.0f);
+    ggml_tensor * probabilities = ggml_soft_max(ctx, scores);
     ggml_tensor * v_head = ggml_cont(ctx, ggml_permute(ctx, v, 1, 2, 0, 3));
     ggml_tensor * attended = ggml_mul_mat(ctx, probabilities, v_head);
     attended = ggml_cont(ctx, ggml_permute(ctx, attended, 2, 0, 1, 3));

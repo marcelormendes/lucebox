@@ -12,7 +12,8 @@ final RMSNorm, then the ratio-three aligner. Explicit BF16-to-F32 round trips
 preserve the source's BF16 materialization points while normalization and rotary
 math stay F32. RoPE uses cached source-shaped height frequencies followed by
 width frequencies and rotates the two 32-channel halves. Attention is an
-unmasked score/softmax/value graph. The aligner pads only bottom and right and
+unmasked score/softmax/value graph; it follows PyTorch's math-SDPA operation
+order by pre-scaling both Q and K before the F32 score matmul. The aligner pads only bottom and right and
 uses GGML `im2col`, whose channel-first flatten order matches `F.unfold`, plus
 `ggml_gelu_erf` for exact GELU.
 
