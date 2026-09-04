@@ -58,6 +58,6 @@ for label in ('corn','carrots'):
         math.tofile(a.output/f'{label}-{name}.f32')
         original=np.fromfile(a.reference/entry[name]['file'],np.float32).reshape(entry[name]['shape'])
         native=np.fromfile(a.native/f'{label}-{name}.f32',np.float32).reshape(entry[name]['shape'])
-        results['images'][label][name]={'math_vs_original_cpu_flash':metrics(math,original),'native_vs_math':metrics(native,math)}
+        results['images'][label][name]={'math_vs_original_fixture':metrics(math,original),'native_vs_math':metrics(native,math)}
     (a.output/'comparison.json').write_text(json.dumps(results,indent=2)+'\n')
     print(label,json.dumps(results['images'][label]),flush=True)

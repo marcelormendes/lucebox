@@ -31,7 +31,7 @@ with tempfile.TemporaryDirectory(prefix='ds4v-loader-') as temporary:
                                       ('dtype',None,None,'wrong tensor dtype'),
                                       ('metadata_type',None,None,'missing or wrong metadata type'),
                                       ('missing_metadata',None,None,'missing or wrong metadata type'),
-                                      ('overlap',None,None,'overlapping tensor data')]:
+                                      ('overlap',None,None,'could not parse vision GGUF')]:
         exporter.metadata=lambda: [(k,t,value if k==key else v) for k,t,v in original_metadata()]
         if label=='metadata_type':
             exporter.metadata=lambda: [(k,'string' if k=='deepseek4.vision.schema_version' else t,v) for k,t,v in original_metadata()]
@@ -48,7 +48,7 @@ with tempfile.TemporaryDirectory(prefix='ds4v-loader-') as temporary:
             tensor=selected[0 if label=='dtype' else 1]
             name=exporter._pack_string(tensor.name)
             type_offset=header.index(name)+len(name)+4+8*len(tensor.shape)
-            if label=='dtype': struct.pack_into('<I',header,type_offset,0)
+            if label=='dtype': struct.pack_into('<I',header,type_offset,1)
             else: struct.pack_into('<Q',header,type_offset+4,0)
         path=root/(label+'.gguf')
         with path.open('wb') as f:
