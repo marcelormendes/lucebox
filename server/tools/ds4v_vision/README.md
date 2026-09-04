@@ -128,3 +128,24 @@ bytes; corn scratch 77,774,592 bytes and 3.30829 s encode; carrots scratch
 load. The configured 2 GiB graph scratch cap is distinct from total process RSS.
 Largest permitted grids are bounded analytically and by allocation measurement;
 only the original 782/2562-patch grids have full numerical reference qualification.
+
+## Selected-base follow-up
+
+The full N-layout budget regression fails at5845ed5 and passes at5bf705e.
+The largest grid permitted by this budget (6x561=3366patches) runs with finite
+outputs and bitwise observer invariance. It is an allocation boundary fixture,
+not a source resize-aspect fixture. Scratch is822488832bytes without diagnostics
+and891424512bytes with them; encode times26.74/27.14seconds, peak RSS1881796KiB.
+Failure/reload checks precede each successful encode; scratch release follows it.
+
+An optional HIP build can prepare the same probe for the later GPU window:
+
+```sh
+ROCM_PATH=/opt/rocm-7.2.4 cmake -S server/tools/ds4v_vision -B /tmp/ds4v-runtime-hip-build -DCMAKE_BUILD_TYPE=Release -DDS4V_VISION_HIP=ON '-DCMAKE_HIP_ARCHITECTURES=gfx1100;gfx1151' -DCMAKE_HIP_COMPILER=/opt/rocm-7.2.4/lib/llvm/bin/clang++
+cmake --build /tmp/ds4v-runtime-hip-build -j2
+```
+
+Append `hip:0` or `hip:1` to an encode/load-only probe command to request that
+device explicitly. It fails if unavailable and never falls back to CPU. Building
+the target is not GPU qualification. Do not run it on GPU before the private text
+load proof and the operator's GPU window permit it.

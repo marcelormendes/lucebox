@@ -1,5 +1,8 @@
 #include "deepseek4/deepseek4_vision.h"
 #include "ggml-cpu.h"
+#ifdef DS4V_VISION_HIP
+#include "ggml-cuda.h"
+#endif
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -21,17 +24,29 @@ static void save(const std::string & path,const std::vector<float> & values) {
     if(!f) throw std::runtime_error("output write failed: "+path);
 }
 int main(int argc,char ** argv) {
-    if(argc!=8 && argc!=5) {
-        std::cerr<<"usage: ds4v_vision_probe mmproj patches.f32 height width output-dir label stages(0|1)\n"
-                 <<"       ds4v_vision_probe mmproj --load-only dimension vocabulary\n"; return 2;
+    const bool load_only=argc>=3 && std::string(argv[2])=="--load-only";
+    if((load_only && argc!=5 && argc!=6) || (!load_only && argc!=8 && argc!=9)) {
+        std::cerr<<"usage: ds4v_vision_probe mmproj patches.f32 height width output-dir label stages(0|1) [cpu|hip:0|hip:1]\n"
+                 <<"       ds4v_vision_probe mmproj --load-only dimension vocabulary [cpu|hip:0|hip:1]\n"; return 2;
     }
-    auto backend=ggml_backend_cpu_init();
-    ggml_backend_cpu_set_n_threads(backend,2);
+    const std::string device=(load_only?argc==6:argc==9)?argv[argc-1]:"cpu";
+    ggml_backend_t backend=nullptr;
+    if(device=="cpu") {
+        backend=ggml_backend_cpu_init();
+        if(backend) ggml_backend_cpu_set_n_threads(backend,2);
+    }
+#ifdef DS4V_VISION_HIP
+    else if(device=="hip:0" || device=="hip:1") {
+        const int index=device.back()-'0';
+        if(index<ggml_backend_cuda_get_device_count()) backend=ggml_backend_cuda_init(index);
+    }
+#endif
+    if(!backend) { std::cerr<<"ERROR: requested qualification backend is unavailable\n"; return 1; }
+    std::cout<<"backend="<<ggml_backend_name(backend)<<" requested="<<device<<"\n";
     int status=0;
     try {
         VisionRuntime runtime;
         std::string error;
-        bool load_only=argc==5 && std::string(argv[2])=="--load-only";
         int dimension=load_only?std::stoi(argv[3]):4096,vocabulary=load_only?std::stoi(argv[4]):129280;
         if(!runtime.load(argv[1],backend,dimension,vocabulary,error)) throw std::runtime_error(error);
         std::cout<<"weights_bytes="<<runtime.weight_bytes()<<"\n";
