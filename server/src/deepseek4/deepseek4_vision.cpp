@@ -24,6 +24,8 @@ namespace {
 
 constexpr size_t kGraphMetadataBytes = 16 * 1024 * 1024;
 constexpr int kGraphNodes = 512;
+constexpr uint64_t kMaxGraphScratchBytes = 2ULL * 1024 * 1024 * 1024;
+constexpr uint64_t kNonAttentionScratchAllowance = 256ULL * 1024 * 1024;
 
 struct VisionBlockWeights {
     ggml_tensor * norm1 = nullptr;
@@ -303,6 +305,7 @@ ggml_tensor * linear(ggml_context * ctx,
                      ggml_tensor * input,
                      ggml_tensor * bias) {
     ggml_tensor * result = ggml_mul_mat(ctx, weight, input);
+    ggml_mul_mat_set_prec(result, GGML_PREC_F32);
     if (bias) result = ggml_add(ctx, result, as_f32(ctx, bias));
     return round_bf16(ctx, result);
 }
@@ -352,9 +355,11 @@ ggml_tensor * explicit_attention(ggml_context * ctx,
     q_head = ggml_scale(ctx, q_head, operand_scale);
     k_head = ggml_scale(ctx, k_head, operand_scale);
     ggml_tensor * scores = ggml_mul_mat(ctx, k_head, q_head);
+    ggml_mul_mat_set_prec(scores, GGML_PREC_F32);
     ggml_tensor * probabilities = ggml_soft_max(ctx, scores);
     ggml_tensor * v_head = ggml_cont(ctx, ggml_permute(ctx, v, 1, 2, 0, 3));
     ggml_tensor * attended = ggml_mul_mat(ctx, probabilities, v_head);
+    ggml_mul_mat_set_prec(attended, GGML_PREC_F32);
     attended = ggml_cont(ctx, ggml_permute(ctx, attended, 2, 0, 1, 3));
     attended = ggml_reshape_2d(ctx, attended, head_dim * heads, tokens);
     return round_bf16(ctx, attended);
@@ -400,13 +405,15 @@ struct StageTensor {
     ggml_tensor * tensor;
 };
 
-void maybe_capture(const VisionEncodeOptions & options,
+void maybe_capture(ggml_context * ctx,
+                   const VisionEncodeOptions & options,
                    const std::string & name,
                    ggml_tensor * tensor,
                    std::vector<StageTensor> & stages) {
     if (stage_requested(options, name)) {
-        ggml_set_output(tensor);
-        stages.push_back({name, tensor});
+        ggml_tensor * snapshot = ggml_dup(ctx, tensor);
+        ggml_set_output(snapshot);
+        stages.push_back({name, snapshot});
     }
 }
 
@@ -508,9 +515,10 @@ bool run_patch_embedding(VisionRuntime::Impl & runtime,
                                     runtime.weights.patch_bias);
     ggml_set_output(embedded);
     std::vector<StageTensor> stages;
-    maybe_capture(options, "patch_embed", embedded, stages);
+    maybe_capture(gc.ctx, options, "patch_embed", embedded, stages);
     ggml_cgraph * graph = ggml_new_graph_custom(gc.ctx, kGraphNodes, false);
     ggml_build_forward_expand(graph, embedded);
+    for (const StageTensor & stage : stages) ggml_build_forward_expand(graph, stage.tensor);
     return compute_graph(runtime, gc, graph,
                          {{input, patches.data(), patches.size() * sizeof(float)}},
                          embedded, output, stages, options, error);
@@ -538,10 +546,10 @@ bool run_block(VisionRuntime::Impl & runtime,
     std::vector<StageTensor> stages;
     const std::string prefix = "block." + std::to_string(block_index);
     ggml_tensor * norm1 = rms_norm(gc.ctx, input, weights.norm1, runtime.config.rms_epsilon);
-    maybe_capture(options, prefix + ".norm1", norm1, stages);
+    maybe_capture(gc.ctx, options, prefix + ".norm1", norm1, stages);
 
     ggml_tensor * qkv = linear(gc.ctx, weights.wqkv_weight, norm1, weights.wqkv_bias);
-    maybe_capture(options, prefix + ".qkv", qkv, stages);
+    maybe_capture(gc.ctx, options, prefix + ".qkv", qkv, stages);
     auto qkv_slice = [&](size_t offset) {
         ggml_tensor * view = ggml_view_2d(gc.ctx, qkv, 1024, tokens, qkv->nb[1], offset);
         return ggml_reshape_3d(gc.ctx, ggml_cont(gc.ctx, view), 64, 16, tokens);
@@ -551,20 +559,20 @@ bool run_block(VisionRuntime::Impl & runtime,
     ggml_tensor * v = qkv_slice(2048 * sizeof(float));
     q = explicit_half_split_rope(gc.ctx, q, cos, sin, 64, 16, tokens);
     k = explicit_half_split_rope(gc.ctx, k, cos, sin, 64, 16, tokens);
-    maybe_capture(options, prefix + ".q_rope", q, stages);
-    maybe_capture(options, prefix + ".k_rope", k, stages);
+    maybe_capture(gc.ctx, options, prefix + ".q_rope", q, stages);
+    maybe_capture(gc.ctx, options, prefix + ".k_rope", k, stages);
     ggml_tensor * attention = explicit_attention(gc.ctx, q, k, v, 64, 16, tokens);
-    maybe_capture(options, prefix + ".attention", attention, stages);
+    maybe_capture(gc.ctx, options, prefix + ".attention", attention, stages);
     ggml_tensor * projected = linear(gc.ctx, weights.wo_weight, attention, weights.wo_bias);
-    maybe_capture(options, prefix + ".attn_output", projected, stages);
+    maybe_capture(gc.ctx, options, prefix + ".attn_output", projected, stages);
     ggml_tensor * residual = round_bf16(gc.ctx, ggml_add(gc.ctx, input, projected));
-    maybe_capture(options, prefix + ".attn_residual", residual, stages);
+    maybe_capture(gc.ctx, options, prefix + ".attn_residual", residual, stages);
 
     ggml_tensor * norm2 = rms_norm(gc.ctx, residual, weights.norm2,
                                    runtime.config.rms_epsilon);
-    maybe_capture(options, prefix + ".norm2", norm2, stages);
+    maybe_capture(gc.ctx, options, prefix + ".norm2", norm2, stages);
     ggml_tensor * gate_up = linear(gc.ctx, weights.mlp_w1, norm2, nullptr);
-    maybe_capture(options, prefix + ".mlp_w1", gate_up, stages);
+    maybe_capture(gc.ctx, options, prefix + ".mlp_w1", gate_up, stages);
     auto gate_up_slice = [&](size_t offset) {
         return ggml_cont(gc.ctx, ggml_view_2d(
             gc.ctx, gate_up, 2816, tokens, gate_up->nb[1], offset));
@@ -574,13 +582,14 @@ bool run_block(VisionRuntime::Impl & runtime,
     gate = round_bf16(gc.ctx, ggml_silu(gc.ctx, gate));
     ggml_tensor * gated = round_bf16(gc.ctx, ggml_mul(gc.ctx, gate, up));
     ggml_tensor * mlp = linear(gc.ctx, weights.mlp_w2, gated, nullptr);
-    maybe_capture(options, prefix + ".mlp_output", mlp, stages);
+    maybe_capture(gc.ctx, options, prefix + ".mlp_output", mlp, stages);
     ggml_tensor * block_output = round_bf16(gc.ctx, ggml_add(gc.ctx, residual, mlp));
-    maybe_capture(options, prefix + ".output", block_output, stages);
+    maybe_capture(gc.ctx, options, prefix + ".output", block_output, stages);
     ggml_set_output(block_output);
 
     ggml_cgraph * graph = ggml_new_graph_custom(gc.ctx, kGraphNodes, false);
     ggml_build_forward_expand(graph, block_output);
+    for (const StageTensor & stage : stages) ggml_build_forward_expand(graph, stage.tensor);
     return compute_graph(runtime, gc, graph,
                          {{input, input_values.data(), input_values.size() * sizeof(float)},
                           {cos, rope_cos.data(), rope_cos.size() * sizeof(float)},
@@ -602,9 +611,10 @@ bool run_final_norm(VisionRuntime::Impl & runtime,
                                     runtime.config.rms_epsilon);
     ggml_set_output(result);
     std::vector<StageTensor> stages;
-    maybe_capture(options, "tower.final", result, stages);
+    maybe_capture(gc.ctx, options, "tower.final", result, stages);
     ggml_cgraph * graph = ggml_new_graph_custom(gc.ctx, kGraphNodes, false);
     ggml_build_forward_expand(graph, result);
+    for (const StageTensor & stage : stages) ggml_build_forward_expand(graph, stage.tensor);
     return compute_graph(runtime, gc, graph,
                          {{input, input_values.data(), input_values.size() * sizeof(float)}},
                          result, output, stages, options, error);
@@ -639,20 +649,21 @@ bool run_aligner(VisionRuntime::Impl & runtime,
     unfolded = ggml_reshape_2d(gc.ctx, unfolded, 9216, output_tokens);
 
     std::vector<StageTensor> stages;
-    maybe_capture(options, "aligner.unfold", unfolded, stages);
+    maybe_capture(gc.ctx, options, "aligner.unfold", unfolded, stages);
     ggml_tensor * w1 = linear(gc.ctx, runtime.weights.aligner_w1_weight,
                               unfolded, runtime.weights.aligner_w1_bias);
-    maybe_capture(options, "aligner.w1", w1, stages);
+    maybe_capture(gc.ctx, options, "aligner.w1", w1, stages);
     ggml_tensor * activated = round_bf16(gc.ctx, ggml_gelu_erf(gc.ctx, w1));
-    maybe_capture(options, "aligner.gelu", activated, stages);
+    maybe_capture(gc.ctx, options, "aligner.gelu", activated, stages);
     ggml_tensor * aligned = linear(gc.ctx, runtime.weights.aligner_w2_weight,
                                    activated, runtime.weights.aligner_w2_bias);
-    maybe_capture(options, "aligner.output", aligned, stages);
+    maybe_capture(gc.ctx, options, "aligner.output", aligned, stages);
     ggml_set_output(aligned);
 
     std::vector<float> zero_kernel(static_cast<size_t>(ggml_nelements(kernel)), 0.0f);
     ggml_cgraph * graph = ggml_new_graph_custom(gc.ctx, kGraphNodes, false);
     ggml_build_forward_expand(graph, aligned);
+    for (const StageTensor & stage : stages) ggml_build_forward_expand(graph, stage.tensor);
     return compute_graph(runtime, gc, graph,
                          {{input, features.data(), features.size() * sizeof(float)},
                           {kernel, zero_kernel.data(), zero_kernel.size() * sizeof(float)}},
@@ -665,6 +676,43 @@ VisionRuntime::VisionRuntime() = default;
 VisionRuntime::~VisionRuntime() = default;
 VisionRuntime::VisionRuntime(VisionRuntime &&) noexcept = default;
 VisionRuntime & VisionRuntime::operator=(VisionRuntime &&) noexcept = default;
+
+bool validate_vision_grid(const VisionConfig & config,
+                          VisionPatchGrid grid,
+                          std::string & error) {
+    error.clear();
+    if (grid.height == 0 || grid.width == 0) {
+        error = "vision patch grid must be non-empty";
+        return false;
+    }
+    const uint64_t height = grid.height;
+    const uint64_t width = grid.width;
+    const uint64_t ratio = config.downsample_ratio;
+    if (ratio == 0) {
+        error = "vision downsample ratio is zero";
+        return false;
+    }
+    if (height > width * static_cast<uint64_t>(config.image_max_aspect_ratio) ||
+        width > height * static_cast<uint64_t>(config.image_max_aspect_ratio)) {
+        error = "vision patch grid exceeds the configured aspect ratio";
+        return false;
+    }
+    const uint64_t aligned_rows = ((height + ratio - 1) / ratio) *
+                                  ((width + ratio - 1) / ratio);
+    if (aligned_rows > config.image_max_tokens) {
+        error = "aligned vision token count exceeds the configured maximum";
+        return false;
+    }
+    const uint64_t patch_tokens = height * width;
+    const uint64_t estimated_scratch =
+        2ULL * config.head_count * patch_tokens * patch_tokens * sizeof(float) +
+        kNonAttentionScratchAllowance;
+    if (estimated_scratch > kMaxGraphScratchBytes) {
+        error = "vision graph scratch estimate exceeds the 2 GiB safety ceiling";
+        return false;
+    }
+    return true;
+}
 
 bool VisionRuntime::load(const std::string & path,
                          ggml_backend_t backend,
@@ -791,10 +839,7 @@ bool VisionRuntime::encode(const std::vector<float> & channel_major_patches,
     error.clear();
     output = VisionOutput{};
     if (!impl_) { error = "vision runtime is not loaded"; return false; }
-    if (grid.height == 0 || grid.width == 0) {
-        error = "vision patch grid must be non-empty";
-        return false;
-    }
+    if (!validate_vision_grid(impl_->config, grid, error)) return false;
     const uint64_t tokens64 = static_cast<uint64_t>(grid.height) * grid.width;
     if (tokens64 > std::numeric_limits<uint32_t>::max()) {
         error = "vision patch grid is too large";

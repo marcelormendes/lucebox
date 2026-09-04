@@ -137,4 +137,10 @@ bool run_vision_geometry_self_test(ggml_backend_t backend,
                                    std::string & report,
                                    std::string & error);
 
+// Applies the source image-token/aspect contract and the explicit-path scratch
+// ceiling without allocating a graph or patch buffer.
+bool validate_vision_grid(const VisionConfig & config,
+                          VisionPatchGrid grid,
+                          std::string & error);
+
 } // namespace dflash::common

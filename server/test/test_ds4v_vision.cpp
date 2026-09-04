@@ -40,6 +40,16 @@ int main() {
         return 1;
     }
 
-    std::printf("%s threads=2 unloaded_guard=PASS\n", report.c_str());
+    dflash::common::VisionConfig config;
+    if (dflash::common::validate_vision_grid(config, {100, 100}, error)) {
+        std::fprintf(stderr, "FAIL: oversized aligned grid passed validation\n");
+        return 1;
+    }
+    if (error != "aligned vision token count exceeds the configured maximum") {
+        std::fprintf(stderr, "FAIL: unexpected grid bound error: %s\n", error.c_str());
+        return 1;
+    }
+
+    std::printf("%s threads=2 unloaded_guard=PASS grid_bound=PASS\n", report.c_str());
     return 0;
 }
