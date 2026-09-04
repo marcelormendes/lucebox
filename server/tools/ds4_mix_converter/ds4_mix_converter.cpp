@@ -390,7 +390,38 @@ public:
         }
     }
 
-    std::vector<uint16_t> fit(int levels) const {
+    static std::vector<uint16_t> round_centers(const std::vector<float> & centers, bool & repaired) {
+        std::vector<uint16_t> bits;
+        for (float center : centers) {
+            if (!std::isfinite(center) || center < -1.0f || center > 1.0f)
+                fail("invalid adaptive codebook center");
+            bits.push_back(float_to_bf16(center));
+        }
+        for (size_t i = 1; i < bits.size(); ++i) {
+            if (bf16_to_float(bits[i]) <= bf16_to_float(bits[i-1])) {
+                bits[i] = bf16_step(bits[i-1], true);
+                repaired = true;
+            }
+        }
+        if (!bits.empty() && bf16_to_float(bits.back()) > 1.0f) {
+            bits.back() = float_to_bf16(1.0f);
+            for (size_t i = bits.size()-1; i > 0; --i) {
+                if (bf16_to_float(bits[i-1]) >= bf16_to_float(bits[i]))
+                    bits[i-1] = bf16_step(bits[i], false);
+            }
+        }
+        float previous = -std::numeric_limits<float>::infinity();
+        for (uint16_t b : bits) {
+            const float value = bf16_to_float(b);
+            if (!std::isfinite(value) || value < -1.0f || value > 1.0f || value <= previous)
+                fail("cannot separate adaptive codebook levels in BF16");
+            previous = value;
+        }
+        return bits;
+    }
+
+    std::vector<uint16_t> fit(int levels, const std::string & label = "unlabelled",
+                              std::vector<std::string> * repairs = nullptr) const {
         if (levels != 4 && levels != 8) fail("unsupported fitted codebook size");
         std::vector<uint16_t> result;
         result.reserve(static_cast<size_t>(2*levels));
@@ -399,21 +430,24 @@ public:
         for (int population = 0; population < 2; ++population) {
             const std::vector<double> & h = total(hist_[population]) > 0.0 ? hist_[population] : fallback;
             const std::vector<float> centers = lloyd(h, levels);
-            float previous = -std::numeric_limits<float>::infinity();
-            for (int i = 0; i < levels; ++i) {
-                const uint16_t b = float_to_bf16(centers[i]);
-                const float roundtrip = bf16_to_float(b);
-                if (!std::isfinite(roundtrip) || !(roundtrip > previous)) {
-                    fail("fitted codebook collapses after BF16 rounding");
-                }
-                result.push_back(b);
-                previous = roundtrip;
+            bool repaired = false;
+            const auto bits = round_centers(centers, repaired);
+            result.insert(result.end(), bits.begin(), bits.end());
+            if (repaired) {
+                const std::string stamp = label + " population=" + std::to_string(population) +
+                    " levels=" + std::to_string(levels) + " repair=bf16-epsilon-v1";
+                std::cerr << "[calibration] WARNING: " << stamp << "\n";
+                if (repairs) repairs->push_back(stamp);
             }
         }
         return result;
     }
 
 private:
+    static uint16_t bf16_step(uint16_t bits, bool up) {
+        if ((bits & 0x7fffu) == 0) return up ? 0x0080u : 0x8080u;
+        return static_cast<uint16_t>(bits + ((up != ((bits & 0x8000u) != 0)) ? 1 : -1));
+    }
     static double total(const std::vector<double> & h) {
         double out = 0.0;
         for (double value : h) out += value;
@@ -448,9 +482,6 @@ private:
             }
             for (int j = 0; j < k; ++j) if (weights[j] > 0.0) c[j] = static_cast<float>(sums[j]/weights[j]);
             std::sort(c.begin(), c.end());
-        }
-        for (int j = 1; j < k; ++j) {
-            if (!(c[j] > c[j - 1])) fail("degenerate adaptive codebook");
         }
         return c;
     }
@@ -516,6 +547,7 @@ struct LayerCalibration {
     TensorShape down_shape;
     CodebookRegistry gate_up;
     CodebookRegistry down;
+    std::vector<std::string> repairs;
 };
 
 struct Options {
@@ -1167,8 +1199,9 @@ std::vector<LayerCalibration> calibrate(
                 current.down_shape.in != down_shape.in || current.down_shape.out != down_shape.out) {
                 fail("expert shapes vary within layer " + std::to_string(layer));
             }
-            current.gate_up.experts.push_back(gate_up_fitter.fit(kGuLevels));
-            current.down.experts.push_back(down_fitter.fit(kP4Levels));
+            const std::string label = "layer=" + std::to_string(layer) + " expert=" + std::to_string(expert);
+            current.gate_up.experts.push_back(gate_up_fitter.fit(kGuLevels, label + " gate_up", &current.repairs));
+            current.down.experts.push_back(down_fitter.fit(kP4Levels, label + " down", &current.repairs));
             std::cerr << "[calibration] layer " << layer << " expert " << (expert + 1)
                       << "/" << experts << " fitted joint gate/up and down codebooks\n";
         }
@@ -1258,6 +1291,11 @@ void write_gguf(const Options & options, const SafeTensorSet & source,
     if (!ctx) fail("gguf_init_empty failed");
     set_model_metadata(ctx, source, layers, experts, options.absmax_only,
                        options.experts_only, p4);
+    std::vector<const char *> repair_stamps;
+    for (const auto & layer : calibration)
+        for (const auto & stamp : layer.repairs) repair_stamps.push_back(stamp.c_str());
+    gguf_set_val_str(ctx, "deepseek4.mix.codebook_repair", "bf16-epsilon-v1");
+    gguf_set_arr_str(ctx, "deepseek4.mix.codebook_repairs", repair_stamps.data(), repair_stamps.size());
     std::vector<std::unique_ptr<ggml_tensor>> descriptors;
     descriptors.reserve(plan.size());
     for (const TensorSpec & spec : plan) {

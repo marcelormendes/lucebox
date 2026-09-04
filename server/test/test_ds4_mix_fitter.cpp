@@ -30,6 +30,21 @@ int main() {
                     fail("repaired fp3 codebook rejected by encoder");
             }
         }
+        bool repaired = false;
+        const auto close = HistogramFitter::round_centers({-1.0f, 0.5f, 0.5001f, 1.0f}, repaired);
+        if (!repaired || bf16_to_float(close[2]) <= bf16_to_float(close[1]))
+            fail("BF16 rounding collision was not repaired");
+        repaired = false;
+        const auto distinct = HistogramFitter::round_centers({-1.0f, -0.5f, 0.5f, 1.0f}, repaired);
+        if (repaired || distinct != std::vector<uint16_t>{0xbf80, 0xbf00, 0x3f00, 0x3f80})
+            fail("nondegenerate centers changed");
+        HistogramFitter stamped;
+        float zero[16] = {};
+        stamped.add_half(zero, nullptr);
+        std::vector<std::string> stamps;
+        stamped.fit(4, "layer=42 expert=164 down", &stamps);
+        if (stamps.size() != 2 || stamps[0].find("layer=42 expert=164 down") == std::string::npos)
+            fail("repair stamp missing expert identity");
         bool rejected = false;
         try { HistogramFitter().fit(4); } catch (const std::runtime_error &) { rejected = true; }
         if (!rejected) fail("empty histogram accepted");
