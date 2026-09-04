@@ -35,7 +35,8 @@ add_executable(ds4v_image_prepare
     ../../src/deepseek4/deepseek4_image_prompt.cpp
     ${DS4V_JINJA}/lexer.cpp ${DS4V_JINJA}/parser.cpp
     ${DS4V_JINJA}/runtime.cpp ${DS4V_JINJA}/value.cpp
-    ${DS4V_JINJA}/string.cpp ${DS4V_JINJA}/caps.cpp)
+    ${DS4V_JINJA}/string.cpp ${DS4V_JINJA}/caps.cpp
+    ../../deps/llama.cpp/common/unicode.cpp)
 target_include_directories(ds4v_image_prepare PRIVATE ../../src ../../deps/llama.cpp/common)
 target_link_libraries(ds4v_image_prepare PRIVATE ggml-base nlohmann_json::nlohmann_json ds4v_libjpeg ds4v_lodepng)
 enable_testing()
