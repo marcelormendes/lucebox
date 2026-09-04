@@ -23,6 +23,8 @@ The fixture check compares JPEG/PNG decoded RGB, including PNG alpha removal and
 
 The production boundary remains split: `decode_image` owns bounded JPEG/PNG byte decoding, while `preprocess_rgb` accepts already decoded interleaved RGB and has no image-codec or Python runtime dependency. Configure with `-DDS4V_PREPROCESS_WITH_CODECS=OFF` to build and test the RGB unit without downloading codec dependencies.
 
+PNG decoding sets the IDAT inflation limit to the checked filtered scanline size derived from the validated IHDR color depth and interlace layout. LodePNG may retain capacity up to roughly 1.5 times that limit plus one 65,535-byte uncompressed DEFLATE block before reporting the limit. Text and unknown-chunk storage stay disabled; CRC, Adler-32, and DEFLATE length checks stay enabled; ICC decompression retains LodePNG's 16 MiB cap. GREY16 samples follow Pillow's `I;16` RGB conversion by clamping values above 255. CMYK and YCCK JPEG inputs return `unsupported_format`.
+
 The resampler follows Pillow 12.3.0 `src/libImaging/Resample.c`, including signed 22-bit fixed-point bicubic coefficients and the tall-image vertical-first path.
 
 See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the Pillow-derived resampler notice and the notices for statically linked codec dependencies.

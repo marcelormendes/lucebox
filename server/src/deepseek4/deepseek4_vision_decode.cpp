@@ -4,6 +4,8 @@
 #include <jpeglib.h>
 #include <lodepng.h>
 
+#include <algorithm>
+#include <array>
 #include <csetjmp>
 #include <cstdlib>
 #include <cstring>
@@ -45,6 +47,82 @@ DecodeStatus validate_decoded(
     }
     output_bytes = static_cast<std::size_t>(pixels * 3);
     return {};
+}
+
+bool checked_add_size(std::size_t left, std::size_t right, std::size_t & result) {
+    if (right > std::numeric_limits<std::size_t>::max() - left) {
+        return false;
+    }
+    result = left + right;
+    return true;
+}
+
+bool checked_mul_size(std::size_t left, std::size_t right, std::size_t & result) {
+    if (left != 0 && right > std::numeric_limits<std::size_t>::max() / left) {
+        return false;
+    }
+    result = left * right;
+    return true;
+}
+
+bool png_filtered_size(
+    std::uint32_t width,
+    std::uint32_t height,
+    std::uint32_t bits_per_pixel,
+    std::size_t & result) {
+    std::size_t whole_bytes = 0;
+    if (!checked_mul_size(width / 8, bits_per_pixel, whole_bytes)) {
+        return false;
+    }
+    const std::size_t partial_bytes =
+        ((width & 7U) * static_cast<std::size_t>(bits_per_pixel) + 7) / 8;
+    std::size_t row_bytes = 0;
+    if (!checked_add_size(whole_bytes, partial_bytes, row_bytes) ||
+        !checked_add_size(row_bytes, 1, row_bytes)) {
+        return false;
+    }
+    return checked_mul_size(row_bytes, height, result);
+}
+
+bool png_idat_bound(
+    std::uint32_t width,
+    std::uint32_t height,
+    const LodePNGColorMode & color,
+    std::uint32_t interlace_method,
+    std::size_t & result) {
+    const std::uint32_t bits_per_pixel = lodepng_get_bpp(&color);
+    if (bits_per_pixel == 0) {
+        return false;
+    }
+    if (interlace_method == 0) {
+        return png_filtered_size(width, height, bits_per_pixel, result);
+    }
+    if (interlace_method != 1) {
+        return false;
+    }
+
+    constexpr std::array<std::uint32_t, 7> x_start = {0, 4, 0, 2, 0, 1, 0};
+    constexpr std::array<std::uint32_t, 7> y_start = {0, 0, 4, 0, 2, 0, 1};
+    constexpr std::array<std::uint32_t, 7> x_step = {8, 8, 4, 4, 2, 2, 1};
+    constexpr std::array<std::uint32_t, 7> y_step = {8, 8, 8, 4, 4, 2, 2};
+    result = 0;
+    for (std::size_t pass = 0; pass < x_start.size(); ++pass) {
+        const std::uint32_t pass_width = width <= x_start[pass]
+            ? 0
+            : (width - x_start[pass] + x_step[pass] - 1) / x_step[pass];
+        const std::uint32_t pass_height = height <= y_start[pass]
+            ? 0
+            : (height - y_start[pass] + y_step[pass] - 1) / y_step[pass];
+        if (pass_width == 0 || pass_height == 0) {
+            continue;
+        }
+        std::size_t pass_size = 0;
+        if (!png_filtered_size(pass_width, pass_height, bits_per_pixel, pass_size) ||
+            !checked_add_size(result, pass_size, result)) {
+            return false;
+        }
+    }
+    return result != 0;
 }
 
 struct JpegErrorManager {
@@ -94,6 +172,11 @@ DecodeResult decode_jpeg(const EncodedImageView & encoded, const DecodeLimits & 
     if (jpeg_read_header(&decoder, TRUE) != JPEG_HEADER_OK) {
         jpeg_destroy_decompress(&decoder);
         return fail(DecodeError::MalformedImage, "JPEG header is incomplete");
+    }
+    if (decoder.jpeg_color_space == JCS_CMYK || decoder.jpeg_color_space == JCS_YCCK) {
+        jpeg_destroy_decompress(&decoder);
+        return fail(DecodeError::UnsupportedFormat,
+                    "CMYK and YCCK JPEG images are not supported");
     }
     decoder.out_color_space = JCS_RGB;
     jpeg_calc_output_dimensions(&decoder);
@@ -158,29 +241,65 @@ DecodeResult decode_jpeg(const EncodedImageView & encoded, const DecodeLimits & 
 DecodeResult decode_png(const EncodedImageView & encoded, const DecodeLimits & limits) {
     LodePNGState state;
     lodepng_state_init(&state);
+    state.decoder.ignore_crc = 0;
+    state.decoder.ignore_critical = 0;
+    state.decoder.ignore_end = 0;
+    state.decoder.zlibsettings.ignore_adler32 = 0;
+    state.decoder.zlibsettings.ignore_nlen = 0;
+#ifdef LODEPNG_COMPILE_ANCILLARY_CHUNKS
+    state.decoder.read_text_chunks = 0;
+    state.decoder.remember_unknown_chunks = 0;
+    state.decoder.max_icc_size = 16ULL * 1024ULL * 1024ULL;
+#endif
     unsigned width = 0;
     unsigned height = 0;
     const unsigned inspect_error =
         lodepng_inspect(&width, &height, &state, encoded.data, encoded.size);
-    lodepng_state_cleanup(&state);
     if (inspect_error != 0) {
+        lodepng_state_cleanup(&state);
         return fail(DecodeError::MalformedImage,
                     std::string("malformed PNG: ") + lodepng_error_text(inspect_error));
     }
 
     std::size_t output_bytes = 0;
     if (const auto status = validate_decoded(width, height, limits, output_bytes); !status) {
+        lodepng_state_cleanup(&state);
         DecodeResult result;
         result.status = status;
         return result;
     }
+    std::size_t idat_bound = 0;
+    if (!png_idat_bound(
+            width,
+            height,
+            state.info_png.color,
+            state.info_png.interlace_method,
+            idat_bound)) {
+        lodepng_state_cleanup(&state);
+        return fail(DecodeError::MalformedImage, "PNG filtered scanline size is invalid");
+    }
+    state.decoder.zlibsettings.max_output_size = idat_bound;
+
+    const bool grey16 =
+        state.info_png.color.colortype == LCT_GREY && state.info_png.color.bitdepth == 16;
+    state.info_raw.colortype = grey16 ? LCT_GREY : LCT_RGB;
+    state.info_raw.bitdepth = grey16 ? 16 : 8;
+    state.decoder.color_convert = grey16 ? 0 : 1;
     unsigned char * output = nullptr;
     unsigned decoded_width = 0;
     unsigned decoded_height = 0;
-    const unsigned decode_error = lodepng_decode24(
-        &output, &decoded_width, &decoded_height, encoded.data, encoded.size);
+    const unsigned decode_error = lodepng_decode(
+        &output, &decoded_width, &decoded_height, &state, encoded.data, encoded.size);
+    lodepng_state_cleanup(&state);
     if (decode_error != 0) {
         std::free(output);
+        if (decode_error == 109) {
+            return fail(DecodeError::MalformedImage,
+                        "PNG IDAT exceeds decoded geometry bound");
+        }
+        if (decode_error == 83) {
+            return fail(DecodeError::AllocationFailed, "cannot allocate PNG decode buffer");
+        }
         return fail(DecodeError::MalformedImage,
                     std::string("malformed PNG: ") + lodepng_error_text(decode_error));
     }
@@ -193,7 +312,21 @@ DecodeResult decode_png(const EncodedImageView & encoded, const DecodeLimits & l
     result.image.width = width;
     result.image.height = height;
     try {
-        result.image.pixels.assign(output, output + output_bytes);
+        if (grey16) {
+            const std::size_t sample_count = static_cast<std::size_t>(width) * height;
+            result.image.pixels.resize(output_bytes);
+            for (std::size_t sample = 0; sample < sample_count; ++sample) {
+                const std::uint16_t value =
+                    static_cast<std::uint16_t>(output[sample * 2]) << 8 |
+                    output[sample * 2 + 1];
+                const auto channel = static_cast<std::uint8_t>(std::min<std::uint16_t>(value, 255));
+                result.image.pixels[sample * 3] = channel;
+                result.image.pixels[sample * 3 + 1] = channel;
+                result.image.pixels[sample * 3 + 2] = channel;
+            }
+        } else {
+            result.image.pixels.assign(output, output + output_bytes);
+        }
     } catch (...) {
         std::free(output);
         return fail(DecodeError::AllocationFailed, "cannot own decoded PNG RGB buffer");
