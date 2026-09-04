@@ -37,7 +37,9 @@ PERFORMANCE OF THIS SOFTWARE.
 
 ## LodePNG
 
-Copyright (c) 2005-2018 Lode Vandevenne
+LodePNG version 20260119
+
+Copyright (c) 2005-2026 Lode Vandevenne
 
 This software is provided 'as-is', without any express or implied
 warranty. In no event will the authors be held liable for any damages
