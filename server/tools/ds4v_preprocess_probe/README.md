@@ -10,7 +10,7 @@ python generate_reference_fixtures.py \
   --output /tmp/ds4v-preprocess-fixtures
 ```
 
-Build and run the probe:
+Build and run the probe. Its default codec gate downloads the pinned source archives for libjpeg-turbo 3.1.4.1 and LodePNG commit `ed6fe5825c6a4fbb7f58ab35a4231c7543cd452a`:
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -19,8 +19,8 @@ ctest --test-dir build --output-on-failure
 ./build/ds4v_preprocess_probe --fixtures /tmp/ds4v-preprocess-fixtures
 ```
 
-The fixture check compares resized RGB bytes, BF16 patch words, dimensions, all five grounded start-position layouts, permutations, spans, and a second deterministic run. The built-in self-test covers invalid fixed config, invalid and oversized decoded dimensions without allocating them, wrong RGB byte counts, output bounds, layout budget overflow, and absolute-position overflow.
+The fixture check compares JPEG/PNG decoded RGB, resized RGB bytes, BF16 patch words, dimensions, all five grounded start-position layouts, permutations, spans, and second deterministic decode and preprocessing runs. The built-in self-test covers malformed and truncated JPEG/PNG, unsupported formats, encoded and decoded bounds, invalid fixed config, invalid decoded dimensions, wrong RGB byte counts, output bounds, layout budget overflow, and absolute-position overflow.
 
-JPEG and PNG decoding are a separate gate. This target accepts already decoded interleaved RGB bytes and has no image-codec or Python runtime dependency.
+The production boundary remains split: `decode_image` owns bounded JPEG/PNG byte decoding, while `preprocess_rgb` accepts already decoded interleaved RGB and has no image-codec or Python runtime dependency. Configure with `-DDS4V_PREPROCESS_WITH_CODECS=OFF` to build and test the RGB unit without downloading codec dependencies.
 
 The resampler follows Pillow 12.3.0 `src/libImaging/Resample.c`, including signed 22-bit fixed-point bicubic coefficients and the tall-image vertical-first path.

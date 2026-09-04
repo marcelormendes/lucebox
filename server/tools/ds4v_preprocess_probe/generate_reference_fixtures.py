@@ -132,6 +132,7 @@ def main() -> int:
         assert torch.equal(rebuilt, patches)
 
         save_bytes(case_dir / "input.rgb", image.tobytes(), digests, args.output)
+        save_bytes(case_dir / "encoded.bin", encoded, digests, args.output)
         save_bytes(case_dir / "resized.rgb", resized.tobytes(), digests, args.output)
         save_bytes(
             case_dir / "patches.bf16",

@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 project(ds4v_preprocess_probe LANGUAGES CXX)
 
+option(DS4V_PREPROCESS_WITH_CODECS "Build pinned JPEG/PNG decoder gate" ON)
+
 add_executable(ds4v_preprocess_probe
     ds4v_preprocess_probe.cpp
     ../../src/deepseek4/deepseek4_vision_preprocess.cpp)
@@ -8,6 +10,37 @@ target_include_directories(ds4v_preprocess_probe PRIVATE ../../src/deepseek4)
 target_compile_features(ds4v_preprocess_probe PRIVATE cxx_std_17)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(ds4v_preprocess_probe PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+
+if(DS4V_PREPROCESS_WITH_CODECS)
+    include(FetchContent)
+
+    set(ENABLE_SHARED OFF CACHE BOOL "" FORCE)
+    set(ENABLE_STATIC ON CACHE BOOL "" FORCE)
+    set(WITH_TOOLS OFF CACHE BOOL "" FORCE)
+    set(WITH_TESTS OFF CACHE BOOL "" FORCE)
+    set(WITH_SIMD OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(libjpeg_turbo
+        URL https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.1.4.1/libjpeg-turbo-3.1.4.1.tar.gz
+        URL_HASH SHA256=ecae8008e2cc9ade2f2c1bb9d5e6d4fb73e7c433866a056bd82980741571a022
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    FetchContent_MakeAvailable(libjpeg_turbo)
+
+    FetchContent_Declare(lodepng
+        URL https://github.com/lvandeve/lodepng/archive/ed6fe5825c6a4fbb7f58ab35a4231c7543cd452a.tar.gz
+        URL_HASH SHA256=c2459a3f9145258f901d262576f7a56ca08087d3b3efeee3ae033c0952120803
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    FetchContent_MakeAvailable(lodepng)
+    add_library(ds4v_lodepng STATIC ${lodepng_SOURCE_DIR}/lodepng.cpp)
+    target_include_directories(ds4v_lodepng PUBLIC ${lodepng_SOURCE_DIR})
+
+    target_sources(ds4v_preprocess_probe PRIVATE
+        ../../src/deepseek4/deepseek4_vision_decode.cpp)
+    target_include_directories(ds4v_preprocess_probe PRIVATE
+        ${libjpeg_turbo_SOURCE_DIR}
+        ${libjpeg_turbo_BINARY_DIR})
+    target_compile_definitions(ds4v_preprocess_probe PRIVATE DS4V_PREPROCESS_WITH_CODECS=1)
+    target_link_libraries(ds4v_preprocess_probe PRIVATE jpeg-static ds4v_lodepng)
 endif()
 
 enable_testing()

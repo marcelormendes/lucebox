@@ -1,4 +1,7 @@
 #include "deepseek4_vision_preprocess.h"
+#ifdef DS4V_PREPROCESS_WITH_CODECS
+#include "deepseek4_vision_decode.h"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -22,6 +25,11 @@ using dflash::vision::PreprocessError;
 using dflash::vision::PreprocessLimits;
 using dflash::vision::PreprocessResult;
 using dflash::vision::ResizePlan;
+#ifdef DS4V_PREPROCESS_WITH_CODECS
+using dflash::vision::DecodeError;
+using dflash::vision::DecodeLimits;
+using dflash::vision::EncodedImageView;
+#endif
 
 namespace {
 
@@ -193,6 +201,28 @@ void require_same_result(const PreprocessResult & first, const PreprocessResult 
 void verify_fixture(const fs::path & root, const FixtureCase & item) {
     const fs::path case_dir = root / item.label;
     const auto input = read_binary<std::uint8_t>(case_dir / "input.rgb");
+#ifdef DS4V_PREPROCESS_WITH_CODECS
+    const auto encoded = read_binary<std::uint8_t>(case_dir / "encoded.bin");
+    const auto decoded = dflash::vision::decode_image({encoded.data(), encoded.size()});
+    require(static_cast<bool>(decoded),
+            item.label + " decode failed: " +
+                dflash::vision::decode_error_name(decoded.status.code) + ": " +
+                decoded.status.message);
+    require(decoded.image.width == item.input_width && decoded.image.height == item.input_height,
+            item.label + " decoded dimensions mismatch");
+    require_equal(decoded.image.pixels, input, item.label + " decoded RGB");
+    const auto decoded_again = dflash::vision::decode_image({encoded.data(), encoded.size()});
+    require(static_cast<bool>(decoded_again), item.label + " repeated decode failed");
+    require_equal(decoded_again.image.pixels, decoded.image.pixels,
+                  item.label + " deterministic decode");
+
+    DecodeLimits one_pixel;
+    one_pixel.decoded.max_decoded_pixels = 1;
+    const auto bounded = dflash::vision::decode_image(
+        {encoded.data(), encoded.size()}, one_pixel);
+    require(bounded.status.code == DecodeError::DecodedTooLarge && bounded.image.pixels.empty(),
+            item.label + " decoded pixel cap did not fail before output allocation");
+#endif
     const DecodedRgbView view{item.input_width, item.input_height, input.data(), input.size()};
     const PreprocessResult result = dflash::vision::preprocess_rgb(view, 0);
     require(static_cast<bool>(result),
@@ -293,6 +323,30 @@ void self_test() {
     require(layout.span.block_begin == 0 && layout.span.visible_begin == 3 &&
                 layout.span.visible_end == 13 && layout.span.block_end == 13,
             "known layout span mismatch");
+#ifdef DS4V_PREPROCESS_WITH_CODECS
+    const std::array<std::uint8_t, 6> unsupported = {'G', 'I', 'F', '8', '9', 'a'};
+    require(dflash::vision::decode_image({nullptr, 0}).status.code == DecodeError::EmptyInput,
+            "empty encoded image was accepted");
+    require(dflash::vision::decode_image({unsupported.data(), unsupported.size()}).status.code ==
+                DecodeError::UnsupportedFormat,
+            "unsupported encoded format was accepted");
+    const std::array<std::uint8_t, 4> truncated_jpeg = {0xFF, 0xD8, 0xFF, 0xD9};
+    require(dflash::vision::decode_image(
+                {truncated_jpeg.data(), truncated_jpeg.size()}).status.code ==
+                DecodeError::MalformedImage,
+            "truncated JPEG was accepted");
+    const std::array<std::uint8_t, 8> truncated_png = {137, 80, 78, 71, 13, 10, 26, 10};
+    require(dflash::vision::decode_image(
+                {truncated_png.data(), truncated_png.size()}).status.code ==
+                DecodeError::MalformedImage,
+            "truncated PNG was accepted");
+    const std::uint8_t byte = 0;
+    DecodeLimits encoded_limit;
+    require(dflash::vision::decode_image(
+                {&byte, encoded_limit.max_encoded_bytes + 1}, encoded_limit).status.code ==
+                DecodeError::EncodedTooLarge,
+            "oversized encoded input was inspected");
+#endif
     std::cout << "self-test PASS\n";
 }
 
