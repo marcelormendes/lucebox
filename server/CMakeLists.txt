@@ -377,6 +377,22 @@ if(DFLASH27B_MIXED_GGML_SHARED)
     set(BUILD_SHARED_LIBS ON)
 endif()
 add_subdirectory(deps/llama.cpp/ggml EXCLUDE_FROM_ALL)
+
+option(DFLASH27B_DS4_MIX_CONVERTER
+    "Build the CPU-only DeepSeek-V4 safetensors to MIX GGUF converter" ON)
+if(DFLASH27B_DS4_MIX_CONVERTER)
+    add_executable(ds4_mix_converter
+        tools/ds4_mix_converter/ds4_mix_converter.cpp)
+    target_include_directories(ds4_mix_converter PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/rocmfpx)
+    target_link_libraries(ds4_mix_converter PRIVATE
+        ggml-base nlohmann_json::nlohmann_json)
+    if(UNIX)
+        target_link_libraries(ds4_mix_converter PRIVATE m)
+    endif()
+endif()
+
 if(DFLASH27B_MIXED_GGML_SHARED)
     if(_dflash_build_shared_libs_was_defined)
         set(BUILD_SHARED_LIBS "${_dflash_saved_build_shared_libs}")
@@ -946,6 +962,16 @@ if(DFLASH27B_TESTS)
         target_link_libraries(test_rocmfpx PRIVATE m)
     endif()
     list(APPEND _raw_unit_test_targets test_rocmfpx)
+
+    add_executable(test_ds4_mix_converter test/test_ds4_mix_converter.cpp)
+    target_include_directories(test_ds4_mix_converter PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/rocmfpx)
+    target_link_libraries(test_ds4_mix_converter PRIVATE ggml-base)
+    if(UNIX)
+        target_link_libraries(test_ds4_mix_converter PRIVATE m)
+    endif()
+    list(APPEND _raw_unit_test_targets test_ds4_mix_converter)
 
     if(DFLASH27B_GPU_BACKEND STREQUAL "hip")
         add_executable(test_rocmfp4_hip_tail test/test_rocmfp4_hip_tail.cpp)
