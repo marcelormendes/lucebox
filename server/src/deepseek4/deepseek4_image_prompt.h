@@ -20,9 +20,10 @@ struct ImagePromptLimits {
     std::uint64_t output_reserve = 4096;
     std::uint64_t max_expanded_tokens = 131072;
 };
+constexpr std::uint64_t MAX_PREPARED_PROMPT_TOKENS = 1048576;
 enum class ImagePromptError {
     None, InvalidContract, InvalidLimits, InvalidToken, ImageCount,
-    MarkerCount, InvalidPlan, InvalidPatches, TokenLimit, ContextOverflow,
+    MarkerCount, InvalidPlan, InvalidPatches, TokenLimit, ContextOverflow, AllocationFailed,
 };
 struct PreparedImagePrompt {
     ImagePromptError error = ImagePromptError::None;
