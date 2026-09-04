@@ -401,7 +401,7 @@ add_library(dflash_ds4v_vision STATIC
 target_include_directories(dflash_ds4v_vision PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include)
-target_link_libraries(dflash_ds4v_vision PUBLIC ggml ggml-base)
+target_link_libraries(dflash_ds4v_vision PUBLIC ggml-base)
 
 add_executable(ds4v_vision_probe
     tools/ds4v_vision/main.cpp)
