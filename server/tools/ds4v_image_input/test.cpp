@@ -75,6 +75,18 @@ int main() {
         limits.request_bytes = 11;
         check(extract_chat_images(messages, normalized, images, error, limits), "exact aggregate cap rejected");
 
+        json deep = plain;
+        json * nested = &deep[0]["metadata"];
+        for (int i = 0; i < 72; ++i) {
+            *nested = json::object();
+            nested = &(*nested)["nested"];
+        }
+        *nested = image_part(png);
+        check(!extract_chat_images(deep, normalized, images, error), "deep metadata accepted before copy");
+        check(error == "image message nesting exceeds 64 levels", "unexpected depth rejection");
+        redact_image_urls(deep);
+        check((*nested)["image_url"] == "[image omitted]", "deep redaction failed");
+
         json status = {{"messages", messages}, {"raw_body", {{"nested", image_part(png)}}}};
         redact_image_urls(status);
         check(status.dump().find("base64") == std::string::npos, "status leaks image data URL");
