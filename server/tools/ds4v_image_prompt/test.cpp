@@ -51,6 +51,11 @@ int main() {
         auto independent=prepare_image_prompt({marker},{image});
         image.patches_bf16[0]=0xbf80;
         check(independent.images[0].input.patches_bf16[0]==0,"input lifetime independence");
+        auto other_request=prepare_image_prompt({marker},{small_image(0x3f80)});
+        check(independent.tokens==other_request.tokens,"equal layout fixture");
+        independent.images[0].input.patches_bf16[0]=0xbf80;
+        check(other_request.images[0].input.patches_bf16[0]==0x3f80,"distinct requests own image storage");
+        check(bool(prepare_image_prompt(std::vector<int32_t>(4,marker),std::vector<ImagePatchInput>(4,image))),"four-image boundary");
         rejected(prepare_image_prompt({marker},{}),ImagePromptError::MarkerCount);
         rejected(prepare_image_prompt({1},{image}),ImagePromptError::MarkerCount);
         rejected(prepare_image_prompt({marker,marker},{image}),ImagePromptError::MarkerCount);
@@ -65,6 +70,8 @@ int main() {
         rejected(prepare_image_prompt({marker},{bad}),ImagePromptError::InvalidPlan);
         bad=image; bad.plan.vit_rows=0;
         rejected(prepare_image_prompt({marker},{bad}),ImagePromptError::InvalidPlan);
+        bad=image; bad.plan.vit_rows=std::numeric_limits<uint32_t>::max();
+        rejected(prepare_image_prompt({marker},{bad}),ImagePromptError::InvalidPlan);
         bad=image; bad.plan={1008,672,48,72,16,24,false};
         rejected(prepare_image_prompt({marker},{bad}),ImagePromptError::InvalidPlan);
         bad=image; bad.patches_bf16.pop_back();
@@ -78,6 +85,7 @@ int main() {
         rejected(prepare_image_prompt({marker},{image},{10,1,8}),ImagePromptError::TokenLimit);
         rejected(prepare_image_prompt({1},{},{0,0,1}),ImagePromptError::InvalidLimits);
         rejected(prepare_image_prompt({1},{},{1,2,1}),ImagePromptError::InvalidLimits);
+        rejected(prepare_image_prompt({1},{},{1,0,0}),ImagePromptError::InvalidLimits);
         rejected(prepare_image_prompt({1},{},{2147483648ULL,0,1}),ImagePromptError::InvalidLimits);
         rejected(prepare_image_prompt({1},{},{2147483647,0,2147483647}),ImagePromptError::InvalidLimits);
         rejected(prepare_image_prompt({1},{},{2147483647,2147483647,1}),ImagePromptError::ContextOverflow);
