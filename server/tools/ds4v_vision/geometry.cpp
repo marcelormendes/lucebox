@@ -58,6 +58,38 @@ int main() {
         }
         {
             Test t;
+            const int heads=2,n=3,d=4;
+            std::vector<float> q(n*heads*d),k(q.size()),v(q.size());
+            for(int p=0;p<n;++p) for(int h=0;h<heads;++h) for(int j=0;j<d;++j) {
+                int i=(p*heads+h)*d+j;
+                q[i]=float((p+2*h+j)%5-2)*.25f;
+                k[i]=float((2*p+h+j)%7-3)*.25f;
+                v[i]=float(20*h+3*p+j);
+            }
+            auto out=t.run(detail::attention(t.c,t.input(d,heads,n,q),t.input(d,heads,n,k),t.input(d,heads,n,v)));
+            for(int h=0;h<heads;++h) for(int p=0;p<n;++p) {
+                double weights[3],sum=0;
+                for(int key=0;key<n;++key) {
+                    double dot=0;
+                    for(int j=0;j<d;++j) dot+=double(q[(p*heads+h)*d+j])*k[(key*heads+h)*d+j];
+                    weights[key]=std::exp(dot/std::sqrt(double(d))); sum+=weights[key];
+                }
+                for(int j=0;j<d;++j) {
+                    double value=0;
+                    for(int key=0;key<n;++key) value+=weights[key]/sum*v[(key*heads+h)*d+j];
+                    check(out[(p*heads+h)*d+j]==bf16(float(value)),"nonuniform multihead attention mismatch");
+                }
+            }
+        }
+        {
+            Test t;
+            // BF16 halfway values round to nearest even, including negatives.
+            auto x=t.input(4,1,1,{1.00390625f,1.01171875f,-1.00390625f,-1.01171875f});
+            auto out=t.run(ggml_cast(t.c,ggml_cast(t.c,x,GGML_TYPE_BF16),GGML_TYPE_F32));
+            check(out==std::vector<float>({1.f,1.015625f,-1.f,-1.015625f}),"BF16 halfway rounding mismatch");
+        }
+        {
+            Test t;
             const int h=4,w=5,c=2;
             std::vector<float> data(h*w*c);
             for(int y=0;y<h;++y) for(int x=0;x<w;++x) for(int ch=0;ch<c;++ch) data[(y*w+x)*c+ch]=100*ch+10*y+x+1;
@@ -76,7 +108,7 @@ int main() {
             auto out=t.run(ggml_gelu_erf(t.c,t.input(7,1,1,x)));
             for(int i=0;i<7;++i) check(std::abs(out[i]-.5f*x[i]*(1+std::erf(x[i]/std::sqrt(2.f))))<1e-6f,"exact erf GELU mismatch");
         }
-        std::cout<<"PASS: half-split 2D RoPE, full bidirectional attention, padded channel-first unfold, exact erf GELU\n";
+        std::cout<<"PASS: half-split 2D RoPE, full bidirectional/multihead attention, BF16 halfway rounding, padded channel-first unfold, exact erf GELU\n";
         return 0;
     } catch(const std::exception & e) { std::cerr<<e.what()<<"\n"; return 1; }
 }
