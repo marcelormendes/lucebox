@@ -255,8 +255,12 @@ bool VisionRuntime::encode(const std::vector<float> & patches,PatchGrid grid,Vis
         require(bool(impl_),"vision runtime is not loaded");
         require(grid.height>0 && grid.width>0 && grid.height<=1152 && grid.width<=1152,"invalid patch grid");
         const int64_t n=int64_t(grid.height)*grid.width;
-        const int64_t rows=int64_t((grid.height+2)/3)*((grid.width+2)/3);
-        require(rows<=impl_->config.max_image_tokens && n<=3456,"patch grid exceeds image token budget");
+        const int64_t aligner_height=(grid.height+2)/3, aligner_width=(grid.width+2)/3;
+        const int64_t rows=aligner_height*aligner_width;
+        const int64_t padded_height=aligner_height+aligner_height%2;
+        const int64_t row_length=aligner_width+1;
+        const int64_t block_tokens=padded_height*row_length+2+(padded_height/2*row_length%2)*2;
+        require(block_tokens+3<=impl_->config.max_image_tokens,"patch grid exceeds image token budget");
         require(patches.size()==size_t(n)*588,"patch count/shape mismatch");
         for(float value:patches) require(std::isfinite(value),"non-finite image patch");
         std::vector<float> x;

@@ -1,4 +1,4 @@
-# Native DS4V vision runtime (Candidate A)
+# Native DS4V vision runtime
 
 Reusable, backend-owned projector/tower implementation. `VisionRuntime` borrows
 one caller-selected backend and owns its validated BF16 weight buffer plus a
@@ -35,8 +35,9 @@ Explicit full softmax attention has no causal mask. CPUFlash is not the source
 fixture path: forced Math reproduces both original fixtures bit for bit.
 
 One block graph at a time bounds quadratic scratch, with a hard 2 GiB graph
-buffer limit measured before allocation. Input grids are capped at 384 aligner
-rows and 3456 patches. Diagnostic tensors are independent snapshots; a flag on
+buffer limit measured before allocation. Input grids must fit the complete
+384-token N-layout budget, including delimiters, row/odd-row/parity padding,
+and three reserved leading alignment tokens. Diagnostic tensors are independent snapshots; a flag on
 a view alone does not protect its backing allocation. No attention matrices are
 retained across blocks. Caller diagnostics run synchronously. Each block currently
 returns its F32 residual to host and uploads it into the following graph; HIP
@@ -75,6 +76,9 @@ with `OMP_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2` for these tools:
 
 - `compare.py REFERENCE NATIVE --output comparison.json`: original fixture
   hashes, raster shapes, finite values, max absolute error, RMSE, cosine.
+  It exits 3 when the unchanged Candidate B gates fail: feature maxabs <=0.25,
+  RMSE <=0.03, cosine >=0.9995; embedding maxabs <=0.75, RMSE <=0.08,
+  cosine >=0.9990. These gates were fixed before the candidate fixture runs.
 - `reference_stages.py SOURCE REFERENCE NATIVE stages.json`: original source
   hooks reproduce both fixture finals bitwise, then each original block consumes
   the native incoming residual to isolate local arithmetic from accumulated drift.
@@ -108,8 +112,8 @@ Final native graph versus **original** CPU fixtures:
 | corn features | 782 x 1024 | 1.484375 | 0.00629541949 | 0.99822935535 |
 | corn embeddings | 96 x 4096 | 0.09423828125 | 0.00319258993 | 0.99907754975 |
 
-All four outputs are finite. These are measured errors, not a claimed parity
-threshold. Differences begin at patch embedding and accumulate through BF16
+All four outputs are finite. Corn fails the fixed feature gate, so the comparison
+command returns 3. Differences begin at patch embedding and accumulate through BF16
 residuals. Stage diagnostics isolate sharp amplification at blocks 12 and 31.
 Same-input unfolding is bitwise exact for both fixtures, and same-input final
 norm/aligner comparisons isolate small local kernel errors. The source Math
