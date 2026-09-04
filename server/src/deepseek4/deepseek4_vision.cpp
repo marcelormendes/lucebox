@@ -211,7 +211,7 @@ bool VisionRuntime::load(const std::string & path,ggml_backend_t backend,int dim
         auto expected=inventory();
         require(gguf_get_n_tensors(meta.g)==int64_t(expected.size()),"wrong projector tensor count");
         common::GgufMmap mapped;
-        require(mapped.open(path,error),error);
+        if(!mapped.open(path,error)) throw std::runtime_error(error);
         std::vector<std::pair<size_t,size_t>> ranges;
         for(int64_t i=0;i<gguf_get_n_tensors(meta.g);++i) {
             std::string name=gguf_get_tensor_name(meta.g,i);

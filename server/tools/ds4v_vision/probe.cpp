@@ -36,6 +36,11 @@ int main(int argc,char ** argv) {
         if(!runtime.load(argv[1],backend,dimension,vocabulary,error)) throw std::runtime_error(error);
         std::cout<<"weights_bytes="<<runtime.weight_bytes()<<"\n";
         if(!load_only) {
+            if(runtime.load(argv[1],backend,4095,129280,error)) throw std::runtime_error("incompatible reload accepted");
+            if(!runtime.config() || runtime.weight_bytes()==0) throw std::runtime_error("failed reload destroyed runtime");
+            std::vector<float> sentinel_after_reload;
+            if(!runtime.sentinel(Sentinel::Start,sentinel_after_reload,error)) throw std::runtime_error("failed reload lost sentinels");
+            if(runtime.sentinel(static_cast<Sentinel>(99),sentinel_after_reload,error)) throw std::runtime_error("invalid sentinel accepted");
             const auto patches=read_file(argv[2]);
             PatchGrid grid{std::stoi(argv[3]),std::stoi(argv[4])};
             const std::string output_dir=argv[5],label=argv[6];

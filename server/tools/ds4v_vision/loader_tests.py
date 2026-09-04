@@ -27,13 +27,29 @@ with tempfile.TemporaryDirectory(prefix='ds4v-loader-') as temporary:
     for label,key,value,error in cases+[('missing',None,None,'wrong projector tensor count'),
                                       ('shape',None,None,'wrong tensor shape'),
                                       ('unknown',None,None,'unknown or duplicate tensor'),
-                                      ('truncated',None,None,'tensor outside file')]:
+                                      ('truncated',None,None,'tensor outside file'),
+                                      ('dtype',None,None,'wrong tensor dtype'),
+                                      ('metadata_type',None,None,'missing or wrong metadata type'),
+                                      ('missing_metadata',None,None,'missing or wrong metadata type'),
+                                      ('overlap',None,None,'overlapping tensor data')]:
         exporter.metadata=lambda: [(k,t,value if k==key else v) for k,t,v in original_metadata()]
+        if label=='metadata_type':
+            exporter.metadata=lambda: [(k,'string' if k=='deepseek4.vision.schema_version' else t,v) for k,t,v in original_metadata()]
+        if label=='missing_metadata':
+            exporter.metadata=lambda: [(k,t,v) for k,t,v in original_metadata() if k!='deepseek4.vision.block_count']
         selected=list(tensors)
         if label=='missing': selected.pop()
         if label=='shape': selected[0]=replace(selected[0],shape=(2048,),nbytes=4096)
         if label=='unknown': selected[0]=replace(selected[0],name='unknown.tensor')
         header,out=exporter._build_header(selected)
+        if label in ('dtype','overlap'):
+            import struct
+            header=bytearray(header)
+            tensor=selected[0 if label=='dtype' else 1]
+            name=exporter._pack_string(tensor.name)
+            type_offset=header.index(name)+len(name)+4+8*len(tensor.shape)
+            if label=='dtype': struct.pack_into('<I',header,type_offset,0)
+            else: struct.pack_into('<Q',header,type_offset+4,0)
         path=root/(label+'.gguf')
         with path.open('wb') as f:
             f.write(header)
