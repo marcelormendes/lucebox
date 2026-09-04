@@ -44,6 +44,7 @@ for prefix, module in [('vision.', vit), ('aligner.', aligner)]:
     del state
 results = {}
 label = None
+mode = "original"
 
 def compare(stage, value):
     reference = value.detach().float().contiguous().numpy()
@@ -52,8 +53,14 @@ def compare(stage, value):
     x, y = actual.astype(np.float64).ravel(), reference.astype(np.float64).ravel()
     delta = x-y
     metrics = dict(shape=list(reference.shape), finite=bool(np.isfinite(x).all()), max_abs=float(np.abs(delta).max()), rmse=float(np.sqrt(np.mean(delta**2))), cosine=float(np.dot(x,y)/(np.linalg.norm(x)*np.linalg.norm(y))), exact_fraction=float(np.mean(x==y)))
-    results[label][stage] = metrics
-    print(label, stage, json.dumps(metrics), flush=True)
+    # Monotone BF16 bit ordering gives ULP distances, including negatives.
+    def ordered_bf16(value):
+        bits = np.ascontiguousarray(value, dtype=np.float32).view(np.uint32) >> 16
+        return np.where(bits & 0x8000, 0x8000 - (bits & 0x7fff), 0x8000 + bits).astype(np.int32)
+    ulps = np.abs(ordered_bf16(x)-ordered_bf16(y))
+    metrics.update(bf16_ulp_max=int(ulps.max()), bf16_ulp_p99=float(np.percentile(ulps,99)), bf16_within_one_ulp=float(np.mean(ulps<=1)))
+    results[label][stage if mode == 'original' else mode + '.' + stage] = metrics
+    print(label, mode, stage, json.dumps(metrics), flush=True)
     a.output.write_text(json.dumps(results, indent=2)+'\n')
 
 hooks=[]
@@ -90,6 +97,7 @@ vision.apply_rotary = rotary
 vision.F.scaled_dot_product_attention = sdpa
 for label in ('corn','carrots'):
     results[label] = {}
+    mode = 'original'
     rotary_count = attention_count = 0
     meta = manifest['images'][label]
     patches = torch.from_numpy(np.fromfile(a.reference / meta['patches']['file'],np.float32).reshape(meta['patches']['shape'])).to(torch.bfloat16)
@@ -100,4 +108,20 @@ for label in ('corn','carrots'):
         original = np.fromfile(a.reference / meta[name]['file'],np.float32).reshape(meta[name]['shape'])
         assert np.array_equal(original,value.float().numpy()), f'{label} instrumented parent {name} changed'
     results[label]['original_fixture_bitwise_match'] = True
+    a.output.write_text(json.dumps(results,indent=2)+'\n')
+
+    # Isolate kernel/rounding effects: every parent block receives the exact
+    # native preceding residual, avoiding cumulative differences from earlier blocks.
+    mode = 'same_input'
+    cos, sin = vision.get_vision_cos_sin(*meta['vit_grid'], vit.rope_dim, vit.rope_theta)
+    with torch.inference_mode():
+        for i, block in enumerate(vit.blocks):
+            previous = 'patch_embed' if i == 0 else f'block{i-1}'
+            native_input = torch.from_numpy(np.fromfile(a.native / f'{label}-{previous}.f32', np.float32).reshape(-1,1024)).to(torch.bfloat16)
+            rotary_count = attention_count = 0 if i == 0 else 100
+            block(native_input,cos,sin)
+        native_last = torch.from_numpy(np.fromfile(a.native / f'{label}-block31.f32',np.float32).reshape(-1,1024)).to(torch.bfloat16)
+        vit.norm(native_last)
+        native_features = torch.from_numpy(np.fromfile(a.native / f'{label}-features.f32',np.float32).reshape(-1,1024)).to(torch.bfloat16)
+        aligner(native_features,*meta['vit_grid'])
     a.output.write_text(json.dumps(results,indent=2)+'\n')
