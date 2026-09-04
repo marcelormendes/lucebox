@@ -30,7 +30,7 @@ if(UNIX)
 endif()
 target_compile_options(ds4_mix_converter PRIVATE -Wall -Wextra -Wpedantic)
 
-add_executable(test_ds4_mix_converter ../../test/test_ds4_mix_converter.cpp)
+add_executable(test_ds4_mix_converter ../../test/test_ds4v_mix_converter.cpp ../../test/test_unit_main.cpp)
 target_include_directories(test_ds4_mix_converter PRIVATE
     ../../deps/llama.cpp/ggml/include
     ../../deps/llama.cpp/ggml/rocmfpx)
@@ -40,3 +40,9 @@ if(UNIX)
 endif()
 enable_testing()
 add_test(NAME ds4_mix_converter_codec COMMAND test_ds4_mix_converter)
+
+add_executable(test_ds4_mix_fitter ../../test/test_ds4_mix_fitter.cpp)
+target_link_libraries(test_ds4_mix_fitter PRIVATE ggml-base nlohmann_json::nlohmann_json)
+target_include_directories(test_ds4_mix_fitter PRIVATE
+    ../../deps/llama.cpp/ggml/include ../../deps/llama.cpp/ggml/rocmfpx)
+add_test(NAME ds4_mix_fitter COMMAND test_ds4_mix_fitter)

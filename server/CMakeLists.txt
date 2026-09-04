@@ -963,7 +963,7 @@ if(DFLASH27B_TESTS)
     endif()
     list(APPEND _raw_unit_test_targets test_rocmfpx)
 
-    add_executable(test_ds4_mix_converter test/test_ds4_mix_converter.cpp)
+    add_executable(test_ds4_mix_converter test/test_ds4v_mix_converter.cpp test/test_unit_main.cpp)
     target_include_directories(test_ds4_mix_converter PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include
         ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/rocmfpx)

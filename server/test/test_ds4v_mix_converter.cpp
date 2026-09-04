@@ -19,11 +19,7 @@ using CppUnitTestFramework::CommonFixture;
 #include <cstdio>
 #include <cstring>
 
-static int g_fails = 0;
-#define CHECK(cond, msg)                                                        \
-    do {                                                                        \
-        if (!(cond)) { std::fprintf(stderr, "FAIL: %s\n", (msg)); ++g_fails; }  \
-    } while (0)
+#define CHECK(cond, msg) REQUIRE(cond)
 
 namespace {
 
