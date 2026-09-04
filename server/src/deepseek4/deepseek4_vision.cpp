@@ -92,7 +92,13 @@ struct Graph {
     }
     ~Graph() { ggml_free(c); }
     void stage(const std::string & name,Tensor * t,bool enabled) {
-        if (enabled) { ggml_set_output(t); stages.emplace_back(name,t); }
+        if (enabled) {
+            // An output flag on a view does not pin its underlying allocation.
+            // A dedicated snapshot prevents later in-place operations or allocator
+            // reuse from corrupting diagnostic values (notably reshape/unfold).
+            auto snapshot=ggml_dup(c,t);
+            ggml_set_output(snapshot); stages.emplace_back(name,snapshot);
+        }
     }
 };
 std::vector<float> read(Tensor * t) {
@@ -167,6 +173,7 @@ struct VisionRuntime::Impl {
                               const StageObserver & observer,Tensor * cosine=nullptr,Tensor * sine=nullptr,
                               const std::vector<float> & cos_values={},const std::vector<float> & sin_values={}) {
         ggml_set_input(input); ggml_set_output(output);
+        for(auto & stage:g.stages) ggml_build_forward_expand(g.graph,stage.second);
         ggml_build_forward_expand(g.graph,output);
         if(!allocator) allocator=ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
         require(allocator!=nullptr,"scratch allocator creation failed");
