@@ -24,3 +24,5 @@ The fixture check compares JPEG/PNG decoded RGB, including PNG alpha removal and
 The production boundary remains split: `decode_image` owns bounded JPEG/PNG byte decoding, while `preprocess_rgb` accepts already decoded interleaved RGB and has no image-codec or Python runtime dependency. Configure with `-DDS4V_PREPROCESS_WITH_CODECS=OFF` to build and test the RGB unit without downloading codec dependencies.
 
 The resampler follows Pillow 12.3.0 `src/libImaging/Resample.c`, including signed 22-bit fixed-point bicubic coefficients and the tall-image vertical-first path.
+
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the Pillow-derived resampler notice and the notices for statically linked codec dependencies.

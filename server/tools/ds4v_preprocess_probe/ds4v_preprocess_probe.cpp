@@ -1,11 +1,15 @@
 #include "deepseek4_vision_preprocess.h"
 #ifdef DS4V_PREPROCESS_WITH_CODECS
 #include "deepseek4_vision_decode.h"
+#include <cstdio>
+#include <jpeglib.h>
+#include <lodepng.h>
 #endif
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -273,6 +277,141 @@ void expect_error(PreprocessError expected, PreprocessError actual, const std::s
                 ", expected " + dflash::vision::preprocess_error_name(expected));
 }
 
+#ifdef DS4V_PREPROCESS_WITH_CODECS
+void append_u32(std::vector<std::uint8_t> & output, std::uint32_t value) {
+    output.push_back(static_cast<std::uint8_t>(value >> 24));
+    output.push_back(static_cast<std::uint8_t>(value >> 16));
+    output.push_back(static_cast<std::uint8_t>(value >> 8));
+    output.push_back(static_cast<std::uint8_t>(value));
+}
+
+void append_png_chunk(
+    std::vector<std::uint8_t> & output,
+    const std::array<char, 4> & type,
+    const std::vector<std::uint8_t> & data) {
+    append_u32(output, static_cast<std::uint32_t>(data.size()));
+    const std::size_t crc_begin = output.size();
+    output.insert(output.end(), type.begin(), type.end());
+    output.insert(output.end(), data.begin(), data.end());
+    append_u32(output, lodepng_crc32(output.data() + crc_begin, 4 + data.size()));
+}
+
+std::vector<std::uint8_t> excessive_idat_png() {
+    std::vector<std::uint8_t> inflated(4096, 0);
+    unsigned char * compressed = nullptr;
+    std::size_t compressed_size = 0;
+    const unsigned error = lodepng_zlib_compress(
+        &compressed,
+        &compressed_size,
+        inflated.data(),
+        inflated.size(),
+        &lodepng_default_compress_settings);
+    require(error == 0, "cannot create excessive-IDAT regression PNG");
+
+    std::vector<std::uint8_t> result = {137, 80, 78, 71, 13, 10, 26, 10};
+    const std::vector<std::uint8_t> ihdr = {
+        0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0,
+    };
+    append_png_chunk(result, {'I', 'H', 'D', 'R'}, ihdr);
+    const std::vector<std::uint8_t> compressed_bytes(
+        compressed, compressed + compressed_size);
+    append_png_chunk(result, {'I', 'D', 'A', 'T'}, compressed_bytes);
+    append_png_chunk(result, {'I', 'E', 'N', 'D'}, {});
+    std::free(compressed);
+    return result;
+}
+
+std::vector<std::uint8_t> grey16_png() {
+    constexpr std::array<std::uint16_t, 8> values = {
+        0, 1, 254, 255, 256, 257, 1024, 65535,
+    };
+    std::vector<std::uint8_t> pixels;
+    pixels.reserve(values.size() * 2 * 2);
+    for (int row = 0; row < 2; ++row) {
+        for (const std::uint16_t value : values) {
+            pixels.push_back(static_cast<std::uint8_t>(value >> 8));
+            pixels.push_back(static_cast<std::uint8_t>(value));
+        }
+    }
+    unsigned char * encoded = nullptr;
+    std::size_t encoded_size = 0;
+    const unsigned error = lodepng_encode_memory(
+        &encoded, &encoded_size, pixels.data(), 8, 2, LCT_GREY, 16);
+    require(error == 0, "cannot create GREY16 regression PNG");
+    std::vector<std::uint8_t> result(encoded, encoded + encoded_size);
+    std::free(encoded);
+    return result;
+}
+
+std::vector<std::uint8_t> cmyk_jpeg() {
+    jpeg_compress_struct encoder{};
+    jpeg_error_mgr error{};
+    encoder.err = jpeg_std_error(&error);
+    jpeg_create_compress(&encoder);
+    unsigned char * encoded = nullptr;
+    unsigned long encoded_size = 0;
+    jpeg_mem_dest(&encoder, &encoded, &encoded_size);
+    encoder.image_width = 2;
+    encoder.image_height = 1;
+    encoder.input_components = 4;
+    encoder.in_color_space = JCS_CMYK;
+    jpeg_set_defaults(&encoder);
+    jpeg_start_compress(&encoder, TRUE);
+    std::array<std::uint8_t, 8> pixels = {0, 64, 128, 16, 255, 192, 128, 32};
+    JSAMPROW row = pixels.data();
+    require(jpeg_write_scanlines(&encoder, &row, 1) == 1,
+            "cannot create CMYK regression JPEG");
+    jpeg_finish_compress(&encoder);
+    std::vector<std::uint8_t> result(encoded, encoded + encoded_size);
+    jpeg_destroy_compress(&encoder);
+    std::free(encoded);
+    return result;
+}
+
+void decoder_regression_tests() {
+    std::vector<std::string> failures;
+    const auto excessive = excessive_idat_png();
+    const auto excessive_result =
+        dflash::vision::decode_image({excessive.data(), excessive.size()});
+    if (excessive_result.status.code != DecodeError::MalformedImage ||
+        excessive_result.status.message.find("IDAT exceeds decoded geometry bound") ==
+            std::string::npos) {
+        failures.emplace_back("excess IDAT did not report the bounded-inflate outcome");
+    }
+
+    const auto grey = grey16_png();
+    const auto grey_result = dflash::vision::decode_image({grey.data(), grey.size()});
+    constexpr std::array<std::uint8_t, 8> expected_values = {
+        0, 1, 254, 255, 255, 255, 255, 255,
+    };
+    std::vector<std::uint8_t> expected_rgb;
+    expected_rgb.reserve(expected_values.size() * 2 * 3);
+    for (int row = 0; row < 2; ++row) {
+        for (const std::uint8_t value : expected_values) {
+            expected_rgb.insert(expected_rgb.end(), 3, value);
+        }
+    }
+    if (!grey_result || grey_result.image.pixels != expected_rgb) {
+        failures.emplace_back("GREY16 did not match Pillow I;16 to RGB clamping");
+    }
+
+    const auto cmyk = cmyk_jpeg();
+    const auto cmyk_result = dflash::vision::decode_image({cmyk.data(), cmyk.size()});
+    if (cmyk_result.status.code != DecodeError::UnsupportedFormat) {
+        failures.emplace_back("CMYK JPEG was not classified as unsupported_format");
+    }
+
+    if (!failures.empty()) {
+        std::ostringstream message;
+        message << "decoder regression failures:";
+        for (const auto & failure : failures) {
+            message << "\n- " << failure;
+        }
+        throw std::runtime_error(message.str());
+    }
+}
+#endif
+
 void self_test() {
     PreprocessConfig bad_config;
     bad_config.patch_size = 16;
@@ -346,6 +485,7 @@ void self_test() {
                 {&byte, encoded_limit.max_encoded_bytes + 1}, encoded_limit).status.code ==
                 DecodeError::EncodedTooLarge,
             "oversized encoded input was inspected");
+    decoder_regression_tests();
 #endif
     std::cout << "self-test PASS\n";
 }
