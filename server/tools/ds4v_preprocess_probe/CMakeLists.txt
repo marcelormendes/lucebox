@@ -31,6 +31,7 @@ if(DS4V_PREPROCESS_WITH_CODECS)
             -DWITH_TOOLS=OFF
             -DWITH_TESTS=OFF
             -DWITH_SIMD=OFF
+            -DWITH_TURBOJPEG=OFF
         BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --parallel 2
         BUILD_BYPRODUCTS ${DS4V_JPEG_PREFIX}/lib/libjpeg.a)
     add_library(ds4v_libjpeg STATIC IMPORTED GLOBAL)

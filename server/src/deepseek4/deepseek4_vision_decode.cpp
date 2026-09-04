@@ -25,7 +25,7 @@ DecodeStatus validate_encoded(const EncodedImageView & encoded, const DecodeLimi
         return {DecodeError::EmptyInput, "encoded image is empty"};
     }
     if (limits.max_encoded_bytes == 0 || encoded.size > limits.max_encoded_bytes) {
-        return {DecodeError::EncodedTooLarge, "encoded image exceeds the 16 MiB limit"};
+        return {DecodeError::EncodedTooLarge, "encoded image exceeds the configured byte limit"};
     }
     return {};
 }
