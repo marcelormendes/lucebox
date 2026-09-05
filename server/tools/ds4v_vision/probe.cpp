@@ -75,8 +75,13 @@ int main(int argc,char ** argv) {
                 std::cout<<"stage="<<name<<" shape="<<shape[0]<<","<<shape[1]<<","<<shape[2]<<","<<shape[3]<<std::endl;
             };
             VisionOutput output;
+            const auto lt_before=detail::hip_bias_launches(backend);
             auto started=std::chrono::steady_clock::now();
             if(!runtime.encode(patches,grid,output,error,true,observer)) throw std::runtime_error(error);
+            const auto lt_launches=detail::hip_bias_launches(backend)-lt_before;
+            const auto external=detail::hip_bias_workspace(backend);
+            if(lt_launches!=(external ? 67u : 0u)) throw std::runtime_error("unexpected actual HIP fused-bias dispatch count");
+            std::cout<<"hip_fused_bias_launches="<<lt_launches<<" retained_workspace_bytes="<<external<<"\n";
             save(output_dir+"/"+label+"-features.f32",output.features);
             save(output_dir+"/"+label+"-embeddings.f32",output.embeddings);
             for(auto identity:{Sentinel::Start,Sentinel::Pad,Sentinel::Newline,Sentinel::End}) {
@@ -88,7 +93,7 @@ int main(int argc,char ** argv) {
                      <<" elapsed_seconds="<<std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count()<<"\n";
             // Releasing scratch must leave the loaded projector and sentinels usable.
             runtime.release_scratch();
-            if(runtime.scratch_bytes()!=0) throw std::runtime_error("scratch release failed");
+            if(runtime.scratch_bytes()!=external) throw std::runtime_error("graph scratch release or external workspace accounting failed");
             VisionOutput invalid;
             if(runtime.encode({},grid,invalid,error)) throw std::runtime_error("invalid patch input accepted");
             if(runtime.encode({}, {0,1},invalid,error)) throw std::runtime_error("invalid grid accepted");

@@ -42,9 +42,11 @@ public:
                 VisionOutput & output, std::string & error, bool retain_features = false,
                 const StageObserver & observer = {});
     bool sentinel(Sentinel identity, std::vector<float> & output, std::string & error) const;
+    // Releases graph arena; backend-owned HIP Lt workspace remains retained.
     void release_scratch();
     const VisionConfig * config() const;
     size_t weight_bytes() const;
+    // Conservative graph arena + external HIP workspace reservation.
     size_t scratch_bytes() const;
 private:
     struct Impl;
