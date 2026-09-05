@@ -80,7 +80,9 @@ int main(int argc,char ** argv) {
             if(!runtime.encode(patches,grid,output,error,true,observer)) throw std::runtime_error(error);
             const auto lt_launches=detail::hip_bias_launches(backend)-lt_before;
             const auto external=detail::hip_bias_workspace(backend);
-            if(lt_launches!=(external ? 67u : 0u)) throw std::runtime_error("unexpected actual HIP fused-bias dispatch count");
+            const bool hip_requested=device=="hip:0" || device=="hip:1";
+            if((external!=0)!=hip_requested) throw std::runtime_error("requested HIP backend lacks fused-bias capability");
+            if(lt_launches!=(hip_requested ? 67u : 0u)) throw std::runtime_error("unexpected actual HIP fused-bias dispatch count");
             std::cout<<"hip_fused_bias_launches="<<lt_launches<<" retained_workspace_bytes="<<external<<"\n";
             save(output_dir+"/"+label+"-features.f32",output.features);
             save(output_dir+"/"+label+"-embeddings.f32",output.embeddings);
