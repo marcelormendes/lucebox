@@ -5,6 +5,7 @@
 #include <future>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 // Internal scheduling only: no source, calibration, codec or FILE state lives here.

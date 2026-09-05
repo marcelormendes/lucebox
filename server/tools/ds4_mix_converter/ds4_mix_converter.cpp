@@ -1421,6 +1421,7 @@ int main(int argc, char ** argv) {
         }
         std::cerr << "[plan] CPU-only conversion layers=0.." << (layers - 1)
                   << " experts=0.." << (experts - 1)
+                  << " encode_threads=" << options.encode_threads
                   << (options.experts_only ? " experts-only smoke artifact" : " complete text+vision artifact") << "\n";
         const auto calibration_start = std::chrono::steady_clock::now();
         const auto calibration = calibrate(source, layers, experts, imatrix);
