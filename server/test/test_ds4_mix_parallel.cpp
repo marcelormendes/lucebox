@@ -101,6 +101,17 @@ struct Fixture {
         char path[] = "/tmp/ds4-mix-parallel-test-XXXXXX";
         const char * made = ::mkdtemp(path); check(made != nullptr, "mkdtemp"); root = made;
         json header, index; std::vector<uint8_t> payload;
+        auto tensor = [&](const std::string & name, const char * dtype, std::vector<int> shape,
+                          std::vector<uint8_t> bytes) {
+            const size_t begin = payload.size(); payload.insert(payload.end(), bytes.begin(), bytes.end());
+            header[name] = {{"dtype", dtype}, {"shape", shape}, {"data_offsets", {begin, payload.size()}}};
+            index["weight_map"][name] = "tiny.safetensors";
+        };
+        for (const auto & pair : kGlobalNameMap) tensor(pair.first, "BF16", {1}, {0x80, 0x3f});
+        tensor("vision.fixture.weight", "BF16", {2}, {0, 0x40, 0x80, 0x3f});
+        tensor("layers.0.attn.wkv.weight", "F8_E4M3", {2, 2}, {0x38, 0x40, 0x48, 0x50});
+        tensor("layers.0.attn.wkv.scale", "F8_E8M0", {1, 1}, {127});
+        tensor("layers.0.ffn.gate.tid2eid", "I64", {2}, {1,0,0,0,0,0,0,0,2,0,0,0,0,0,0,0});
         for (unsigned e = 0; e < 17; ++e) for (const auto & recipe : kExpertRecipes) {
             for (bool scale : {false, true}) {
                 const std::string name = source_expert_name(0, e, recipe, scale ? "scale" : "weight");
@@ -113,8 +124,16 @@ struct Fixture {
                 index["weight_map"][name] = "tiny.safetensors";
             }
         }
-        for (const char * name : {"config.json", "tokenizer.json", "tokenizer_config.json"})
-            std::ofstream(root/name) << "{}";
+        json config;
+        for (const char * key : {"hidden_size", "vocab_size", "num_attention_heads", "num_key_value_heads",
+             "head_dim", "qk_rope_head_dim", "q_lora_rank", "o_lora_rank", "o_groups", "num_experts_per_tok",
+             "n_shared_experts", "moe_intermediate_size", "num_hash_layers", "sliding_window", "index_n_heads",
+             "index_head_dim", "index_topk", "hc_mult", "hc_sinkhorn_iters", "num_hidden_layers", "n_routed_experts"})
+            config[key] = 1;
+        config["hidden_size"] = 128; config["moe_intermediate_size"] = 3; config["n_routed_experts"] = 17;
+        std::ofstream(root/"config.json") << config;
+        std::ofstream(root/"tokenizer.json") << R"({"model":{"vocab":{"x":0},"merges":[]}})";
+        std::ofstream(root/"tokenizer_config.json") << "{}";
         std::ofstream(root/"model.safetensors.index.json") << index;
         const std::string text = header.dump(); const uint64_t n = text.size();
         std::ofstream shard(root/"tiny.safetensors", std::ios::binary);
@@ -159,9 +178,23 @@ void actual_encoding() {
         const size_t expert_bytes = serial.size()/17;
         check(!std::equal(serial.begin(), serial.begin()+expert_bytes, serial.begin()+expert_bytes), "fixture experts not distinct");
     }
+    // Whole synthetic artifacts include raw, dense FP8, I64-map producers and repair metadata.
+    c.repairs = {"fixture repair=bf16-epsilon-v1"};
+    Options serial_options; serial_options.output = fixture.root/"serial.gguf";
+    write_gguf(serial_options, source, {c}, 1, 17, imatrix);
+    Options parallel_options = serial_options; parallel_options.output = fixture.root/"parallel.gguf";
+    parallel_options.encode_threads = 8;
+    write_gguf(parallel_options, source, {c}, 1, 17, imatrix);
+    check(read_file(serial_options.output) == read_file(parallel_options.output), "whole synthetic GGUF bytes differ");
+    check(read_file(serial_options.output.string()+".gumix.bin") == read_file(parallel_options.output.string()+".gumix.bin"),
+          "whole synthetic GUMIX bytes differ");
     // Accepted headers, subsequently truncated backing bytes exercise an actual worker read failure.
     fs::resize_file(fixture.root/"tiny.safetensors", fs::file_size(fixture.root/"tiny.safetensors") - 256);
     rejects([&] { encode_fixture(source, c, kExpertRecipes[2], imatrix, 8); }, "short read");
+    Options failed_options = parallel_options; failed_options.output = fixture.root/"failed.gguf";
+    rejects([&] { write_gguf(failed_options, source, {c}, 1, 17, imatrix); }, "short read");
+    check(!fs::exists(failed_options.output) && !fs::exists(failed_options.output.string()+".gumix.bin"),
+          "failed worker published final artifact or sidecar");
     // Kernel write error propagates through the ordered writer, with all tasks joined first.
     std::unique_ptr<FILE, decltype(&std::fclose)> full(std::fopen("/dev/full", "wb"), &std::fclose);
     check(full != nullptr, "open /dev/full"); std::setvbuf(full.get(), nullptr, _IONBF, 0);
