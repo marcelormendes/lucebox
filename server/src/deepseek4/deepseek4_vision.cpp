@@ -108,6 +108,12 @@ std::vector<float> read(Tensor * t) {
 }
 }
 namespace detail {
+Tensor * linear(ggml_context * c,Tensor * weight,Tensor * input,Tensor * bias) {
+    auto y=ggml_mul_mat(c,weight,input);
+    ggml_mul_mat_set_prec(y,GGML_PREC_F32);
+    if(bias) y=ggml_add(c,y,ggml_cast(c,bias,GGML_TYPE_F32));
+    return rounded(c,y);
+}
 void rotary_tables(PatchGrid grid,std::vector<float> & cosine,std::vector<float> & sine) {
     const int n=grid.height*grid.width;
     cosine.resize(size_t(n)*32); sine.resize(size_t(n)*32);
@@ -164,10 +170,7 @@ struct VisionRuntime::Impl {
     }
     Tensor * weight(const std::string & name) { return ggml_get_tensor(weights,name.c_str()); }
     Tensor * linear(ggml_context * c,Tensor * x,const std::string & name,bool bias=true) {
-        auto y=ggml_mul_mat(c,weight(name+".weight"),x);
-        ggml_mul_mat_set_prec(y,GGML_PREC_F32);
-        if(bias) y=ggml_add(c,y,ggml_cast(c,weight(name+".bias"),GGML_TYPE_F32));
-        return rounded(c,y);
+        return detail::linear(c,weight(name+".weight"),x,bias ? weight(name+".bias") : nullptr);
     }
     Tensor * norm(ggml_context * c,Tensor * x,const std::string & name) {
         return rounded(c,ggml_mul(c,ggml_rms_norm(c,x,config.rms_epsilon),

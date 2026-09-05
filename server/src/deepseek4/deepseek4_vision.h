@@ -53,6 +53,7 @@ private:
 
 // The same geometry primitives used by the runtime and standalone unit tests.
 namespace detail {
+ggml_tensor * linear(ggml_context *, ggml_tensor * weight, ggml_tensor * input, ggml_tensor * bias);
 void rotary_tables(PatchGrid grid, std::vector<float> & cosine, std::vector<float> & sine);
 ggml_tensor * rotate(ggml_context *, ggml_tensor *, ggml_tensor * cosine, ggml_tensor * sine);
 ggml_tensor * attention(ggml_context *, ggml_tensor * q, ggml_tensor * k, ggml_tensor * v);
