@@ -34,7 +34,9 @@ The local `GGML_OP_MUL_MAT_BIAS_BF16` operation is appended after `PAGED_ATTN`;
 all existing op numeric values are preserved, while `GGML_OP_COUNT` grows from
 105 to 106; the existing RPC header contract advances protocol patch 5 to 6.
 The RPC registry does not expose the HIP capability, so vision never sends this
-new operation through RPC. Rebuild ggml-base, CPU/HIP backends, and consumers together. Do not
+new operation through RPC; RPC supports_op also rejects it locally. Protocol
+patch mismatches only warn, so this does not rely on a version handshake to
+reject older peers. Rebuild ggml-base, CPU/HIP backends, and consumers together. Do not
 mix old shared libraries with this header or serialize the new operation for
 an older reader. This is an inference-only extension; CPU compute/backward
 reject it, and HIP alone advertises the explicit registry capability. Other
