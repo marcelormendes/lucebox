@@ -9,6 +9,7 @@
 #include <array>
 #include <cerrno>
 #include <cmath>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -567,7 +568,7 @@ struct Options {
 
 void usage(const char * argv0) {
     std::cerr << "Usage: " << argv0 << " --input DIR --output FILE (--imatrix FILE | --absmax-only)\n"
-              << "       [--layer-start N] [--layer-count N] [--expert-limit N] [--experts-only] [--validate-input-only] [--force]\n";
+              << "       [--encode-threads N (1..8, default 1)] [--layer-start N] [--layer-count N] [--expert-limit N] [--experts-only] [--validate-input-only] [--force]\n";
 }
 
 int parse_nonnegative(const char * value, const std::string & option, bool allow_zero = true) {
@@ -595,6 +596,12 @@ Options parse_options(int argc, char ** argv) {
         else if (arg == "--experts-only") out.experts_only = true;
         else if (arg == "--force") out.force = true;
         else if (arg == "--validate-input-only") out.validate_input_only = true;
+        else if (arg == "--encode-threads") {
+            const std::string count = value();
+            if (count.size() != 1 || count[0] < '1' || count[0] > '8')
+                fail("--encode-threads must be an integer in 1..8");
+            out.encode_threads = static_cast<unsigned>(count[0] - '0');
+        }
         else if (arg == "--layer-start") out.layer_start = parse_nonnegative(value(), arg);
         else if (arg == "--layer-count") out.layer_count = parse_nonnegative(value(), arg, false);
         else if (arg == "--expert-limit") out.expert_limit = parse_nonnegative(value(), arg, false);
@@ -1099,48 +1106,70 @@ const LayerCalibration & find_calibration(const std::vector<LayerCalibration> & 
     return *it;
 }
 
+ds4_mix_detail::EncodedExpert encode_expert(
+        const SafeTensorSet & source, const LayerCalibration & calibration,
+        uint32_t expert, const ExpertRecipe & recipe, TensorShape expected,
+        const CodebookRegistry & registry, const std::vector<float> * importance,
+        size_t expert_bytes, size_t row_bytes) {
+    const TensorShape shape = validate_expert_source(source, calibration.layer, expert, recipe);
+    if (shape.in != expected.in || shape.out != expected.out)
+        fail("expert shape drift in " + target_expert_name(calibration.layer, recipe));
+    const StEntry & w = source.at(source_expert_name(calibration.layer, expert, recipe, "weight"));
+    const StEntry & s = source.at(source_expert_name(calibration.layer, expert, recipe, "scale"));
+    OpenTensorPair input(w, s);
+    const auto & books = registry.experts.at(expert);
+    std::vector<uint8_t> packed, scales;
+    std::vector<float> values;
+    std::vector<block_rocmfp2> q2(recipe.qtype == GGML_TYPE_Q2_1_ROCMFP2_MIX ? shape.in/kBlock : 0);
+    std::vector<block_rocmfp3> q3(recipe.qtype == GGML_TYPE_Q3_1_ROCMFP3_MIX ? shape.in/kBlock : 0);
+    ds4_mix_detail::EncodedExpert encoded(expert_bytes);
+    for (uint32_t row = 0; row < shape.out; ++row) {
+        decode_expert_row(input, row, shape.in, packed, scales, values);
+        if (recipe.qtype == GGML_TYPE_Q2_1_ROCMFP2_MIX) {
+            if (!rocmfpx_quantize_row_fp2_mix_ref(values.data(), q2.data(), shape.in,
+                                                   books.data(), importance ? importance->data() : nullptr)) {
+                fail("qtype-106 reference encoder rejected " + w.name);
+            }
+            std::memcpy(encoded.data() + static_cast<size_t>(row)*row_bytes, q2.data(), row_bytes);
+        } else if (recipe.qtype == GGML_TYPE_Q3_1_ROCMFP3_MIX) {
+            if (!rocmfpx_quantize_row_fp3_mix_ref(values.data(), q3.data(), shape.in,
+                                                   books.data(), importance ? importance->data() : nullptr)) {
+                fail("qtype-105 reference encoder rejected " + w.name);
+            }
+            std::memcpy(encoded.data() + static_cast<size_t>(row)*row_bytes, q3.data(), row_bytes);
+        } else {
+            fail("recipe table contains unsupported qtype");
+        }
+    }
+    return encoded;
+}
+
 void write_expert_tensor(FILE * out, const SafeTensorSet & source,
                          const LayerCalibration & calibration, uint32_t experts,
                          const ExpertRecipe & recipe, const std::optional<Imatrix> & imatrix,
                          unsigned encode_threads = 1) {
-    (void) encode_threads; // RED: existing serial implementation
+    const auto started = std::chrono::steady_clock::now();
     const TensorShape expected = recipe.books == BookSource::GateUpJoint
         ? calibration.gate_up_shape : calibration.down_shape;
     const CodebookRegistry & registry = recipe.books == BookSource::GateUpJoint
         ? calibration.gate_up : calibration.down;
     const std::string target = target_expert_name(calibration.layer, recipe);
     const std::vector<float> * importance = require_imatrix(imatrix, target, expected.in);
-    std::vector<uint8_t> packed, scales;
-    std::vector<float> values;
-    std::vector<block_rocmfp2> q2(expected.in/kBlock);
-    std::vector<block_rocmfp3> q3(expected.in/kBlock);
-    for (uint32_t expert = 0; expert < experts; ++expert) {
-        const TensorShape shape = validate_expert_source(source, calibration.layer, expert, recipe);
-        if (shape.in != expected.in || shape.out != expected.out) fail("expert shape drift in " + target);
-        const StEntry & w = source.at(source_expert_name(calibration.layer, expert, recipe, "weight"));
-        const StEntry & s = source.at(source_expert_name(calibration.layer, expert, recipe, "scale"));
-        OpenTensorPair input(w, s);
-        const auto & books = registry.experts.at(expert);
-        for (uint32_t row = 0; row < shape.out; ++row) {
-            decode_expert_row(input, row, shape.in, packed, scales, values);
-            if (recipe.qtype == GGML_TYPE_Q2_1_ROCMFP2_MIX) {
-                if (!rocmfpx_quantize_row_fp2_mix_ref(values.data(), q2.data(), shape.in,
-                                                       books.data(), importance ? importance->data() : nullptr)) {
-                    fail("qtype-106 reference encoder rejected " + w.name);
-                }
-                fwrite_exact(out, q2.data(), q2.size()*sizeof(q2[0]), target);
-            } else if (recipe.qtype == GGML_TYPE_Q3_1_ROCMFP3_MIX) {
-                if (!rocmfpx_quantize_row_fp3_mix_ref(values.data(), q3.data(), shape.in,
-                                                       books.data(), importance ? importance->data() : nullptr)) {
-                    fail("qtype-105 reference encoder rejected " + w.name);
-                }
-                fwrite_exact(out, q3.data(), q3.size()*sizeof(q3[0]), target);
-            } else {
-                fail("recipe table contains unsupported qtype");
-            }
-        }
-        std::cerr << "[encode] " << target << " expert " << (expert + 1) << "/" << experts << "\n";
-    }
+    const size_t block_bytes = recipe.qtype == GGML_TYPE_Q2_1_ROCMFP2_MIX ? sizeof(block_rocmfp2)
+        : recipe.qtype == GGML_TYPE_Q3_1_ROCMFP3_MIX ? sizeof(block_rocmfp3) : 0;
+    const uint64_t row_bytes = checked_mul(expected.in/kBlock, block_bytes, "encoded row bytes");
+    const size_t expert_bytes = ds4_mix_detail::checked_encoded_size(row_bytes, expected.out, encode_threads);
+    ds4_mix_detail::ordered_expert_batches(experts, encode_threads, expert_bytes,
+        [&](uint32_t expert) {
+            return encode_expert(source, calibration, expert, recipe, expected, registry,
+                                 importance, expert_bytes, static_cast<size_t>(row_bytes));
+        }, [&](uint32_t expert, const ds4_mix_detail::EncodedExpert & bytes) {
+            fwrite_exact(out, bytes.data(), bytes.size(), target);
+            std::cerr << "[encode] " << target << " expert " << (expert + 1) << "/" << experts << "\n";
+        });
+    std::cerr << "[timing] encode tensor=" << target << " threads=" << encode_threads
+              << " payload_bound_bytes=" << expert_bytes*encode_threads << " seconds="
+              << std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count() << "\n";
 }
 
 std::vector<LayerCalibration> validate_input_layout(
@@ -1337,7 +1366,7 @@ void write_gguf(const Options & options, const SafeTensorSet & source,
             write_int64_to_int32(out, *spec.source);
         } else {
             write_expert_tensor(out, source, find_calibration(calibration, spec.layer),
-                                experts, *spec.recipe, imatrix);
+                                experts, *spec.recipe, imatrix, options.encode_threads);
         }
         const off_t after = ::ftello(out);
         if (before < 0 || after < before || static_cast<uint64_t>(after - before) != gguf_get_tensor_size(ctx, id)) {
@@ -1393,7 +1422,10 @@ int main(int argc, char ** argv) {
         std::cerr << "[plan] CPU-only conversion layers=0.." << (layers - 1)
                   << " experts=0.." << (experts - 1)
                   << (options.experts_only ? " experts-only smoke artifact" : " complete text+vision artifact") << "\n";
+        const auto calibration_start = std::chrono::steady_clock::now();
         const auto calibration = calibrate(source, layers, experts, imatrix);
+        std::cerr << "[timing] calibration seconds="
+                  << std::chrono::duration<double>(std::chrono::steady_clock::now() - calibration_start).count() << "\n";
         write_gguf(options, source, calibration, layers, experts, imatrix);
         std::cerr << "[done] " << options.output << "\n";
         return 0;

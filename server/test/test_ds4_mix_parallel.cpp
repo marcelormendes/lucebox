@@ -165,7 +165,7 @@ void actual_encoding() {
     // Kernel write error propagates through the ordered writer, with all tasks joined first.
     std::unique_ptr<FILE, decltype(&std::fclose)> full(std::fopen("/dev/full", "wb"), &std::fclose);
     check(full != nullptr, "open /dev/full"); std::setvbuf(full.get(), nullptr, _IONBF, 0);
-    rejects([&] { write_expert_tensor(full.get(), source, c, 17, kExpertRecipes[0], imatrix, 8); }, "write");
+    rejects([&] { write_expert_tensor(full.get(), source, c, 17, kExpertRecipes[0], imatrix, 8); }, "failed writing");
 }
 }
 int main() {
