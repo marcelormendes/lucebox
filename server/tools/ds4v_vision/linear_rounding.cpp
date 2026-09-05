@@ -101,6 +101,7 @@ int main(int argc,char ** argv) {
         size_t required=0; ggml_gallocr_reserve_n_size(owner.allocator,graph,nullptr,nullptr,&required);
         check(required<16*1024*1024,"tiny graph scratch unexpectedly large");
         for(int i=0;i<ggml_graph_n_nodes(graph);++i) check(ggml_backend_supports_op(backend,ggml_graph_node(graph,i)),"unsupported test graph operation");
+        check(ggml_gallocr_reserve(owner.allocator,graph),"graph reservation failed");
         check(ggml_gallocr_alloc_graph(owner.allocator,graph),"graph allocation failed");
         ggml_backend_tensor_set(w,wbits.data(),0,wbits.size()*sizeof(ggml_bf16_t));
         ggml_backend_tensor_set(x,inputs.data(),0,inputs.size()*4);
