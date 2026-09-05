@@ -109,6 +109,10 @@ std::vector<float> read(Tensor * t) {
 }
 namespace detail {
 Tensor * linear(ggml_context * c,Tensor * weight,Tensor * input,Tensor * bias) {
+    // Source biased linears round after the bias. The HIP BF16 BLAS path can
+    // round its product to BF16 even with GGML_PREC_F32; an F32 weight operand
+    // preserves the product until the explicit final boundary below.
+    if(bias) weight=ggml_cast(c,weight,GGML_TYPE_F32);
     auto y=ggml_mul_mat(c,weight,input);
     ggml_mul_mat_set_prec(y,GGML_PREC_F32);
     if(bias) y=ggml_add(c,y,ggml_cast(c,bias,GGML_TYPE_F32));
