@@ -1,6 +1,7 @@
 #include "ggml.h"
 #include "gguf.h"
 #include "rocmfpx.h"
+#include "expert_batches.h"
 
 #include <nlohmann/json.hpp>
 
@@ -561,6 +562,7 @@ struct Options {
     int layer_start = 0;
     int layer_count = -1;
     int expert_limit = -1;
+    unsigned encode_threads = 1;
 };
 
 void usage(const char * argv0) {
@@ -1099,7 +1101,9 @@ const LayerCalibration & find_calibration(const std::vector<LayerCalibration> & 
 
 void write_expert_tensor(FILE * out, const SafeTensorSet & source,
                          const LayerCalibration & calibration, uint32_t experts,
-                         const ExpertRecipe & recipe, const std::optional<Imatrix> & imatrix) {
+                         const ExpertRecipe & recipe, const std::optional<Imatrix> & imatrix,
+                         unsigned encode_threads = 1) {
+    (void) encode_threads; // RED: existing serial implementation
     const TensorShape expected = recipe.books == BookSource::GateUpJoint
         ? calibration.gate_up_shape : calibration.down_shape;
     const CodebookRegistry & registry = recipe.books == BookSource::GateUpJoint

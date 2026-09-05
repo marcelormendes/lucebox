@@ -381,13 +381,14 @@ add_subdirectory(deps/llama.cpp/ggml EXCLUDE_FROM_ALL)
 option(DFLASH27B_DS4_MIX_CONVERTER
     "Build the CPU-only DeepSeek-V4 safetensors to MIX GGUF converter" ON)
 if(DFLASH27B_DS4_MIX_CONVERTER)
+    find_package(Threads REQUIRED)
     add_executable(ds4_mix_converter
         tools/ds4_mix_converter/ds4_mix_converter.cpp)
     target_include_directories(ds4_mix_converter PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include
         ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/rocmfpx)
     target_link_libraries(ds4_mix_converter PRIVATE
-        ggml-base nlohmann_json::nlohmann_json)
+        ggml-base nlohmann_json::nlohmann_json Threads::Threads)
     if(UNIX)
         target_link_libraries(ds4_mix_converter PRIVATE m)
     endif()

@@ -13,6 +13,7 @@ set(GGML_BLAS OFF CACHE BOOL "" FORCE)
 set(GGML_CUDA OFF CACHE BOOL "" FORCE)
 set(GGML_HIP OFF CACHE BOOL "" FORCE)
 
+find_package(Threads REQUIRED)
 include(FetchContent)
 FetchContent_Declare(nlohmann_json
     URL https://codeload.github.com/nlohmann/json/tar.gz/9cca280a4d0ccf0c08f47a99aa71d1b0e52f8d03
@@ -24,7 +25,7 @@ add_executable(ds4_mix_converter ds4_mix_converter.cpp)
 target_include_directories(ds4_mix_converter PRIVATE
     ../../deps/llama.cpp/ggml/include
     ../../deps/llama.cpp/ggml/rocmfpx)
-target_link_libraries(ds4_mix_converter PRIVATE ggml-base nlohmann_json::nlohmann_json)
+target_link_libraries(ds4_mix_converter PRIVATE ggml-base nlohmann_json::nlohmann_json Threads::Threads)
 if(UNIX)
     target_link_libraries(ds4_mix_converter PRIVATE m)
 endif()
@@ -42,7 +43,13 @@ enable_testing()
 add_test(NAME ds4_mix_converter_codec COMMAND test_ds4_mix_converter)
 
 add_executable(test_ds4_mix_fitter ../../test/test_ds4_mix_fitter.cpp)
-target_link_libraries(test_ds4_mix_fitter PRIVATE ggml-base nlohmann_json::nlohmann_json)
+target_link_libraries(test_ds4_mix_fitter PRIVATE ggml-base nlohmann_json::nlohmann_json Threads::Threads)
 target_include_directories(test_ds4_mix_fitter PRIVATE
     ../../deps/llama.cpp/ggml/include ../../deps/llama.cpp/ggml/rocmfpx)
 add_test(NAME ds4_mix_fitter COMMAND test_ds4_mix_fitter)
+
+add_executable(test_ds4_mix_parallel ../../test/test_ds4_mix_parallel.cpp)
+target_link_libraries(test_ds4_mix_parallel PRIVATE ggml-base nlohmann_json::nlohmann_json Threads::Threads)
+target_include_directories(test_ds4_mix_parallel PRIVATE
+    ../../deps/llama.cpp/ggml/include ../../deps/llama.cpp/ggml/rocmfpx)
+add_test(NAME ds4_mix_parallel COMMAND test_ds4_mix_parallel)
