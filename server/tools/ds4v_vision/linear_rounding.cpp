@@ -61,6 +61,10 @@ int main(int argc,char ** argv) {
         check(!std::filesystem::exists(directory),"output directory already exists");
         std::filesystem::create_directories(directory);
         std::cout<<"backend="<<ggml_backend_name(backend)<<" requested="<<device<<'\n';
+        const auto backend_device=ggml_backend_get_device(backend);
+        const bool preserve=backend_device && (ggml_backend_dev_type(backend_device)==GGML_BACKEND_DEVICE_TYPE_GPU ||
+                                              ggml_backend_dev_type(backend_device)==GGML_BACKEND_DEVICE_TYPE_IGPU);
+        std::cout<<"preserve_biased_product="<<preserve<<'\n';
         constexpr int k=64,m=32,n=32; // N>16: exercises ROCm BLAS instead of small-N MMF.
         std::vector<float> weights(k*m,0),inputs(k*n,0),bias(m);
         for(int row=0;row<m;++row) {
@@ -94,8 +98,8 @@ int main(int argc,char ** argv) {
         auto b=ggml_new_tensor_1d(c,GGML_TYPE_BF16,m);
         for(auto t:{w,x,b}) ggml_set_input(t);
         auto raw_dot=ggml_mul_mat(c,w,x); ggml_mul_mat_set_prec(raw_dot,GGML_PREC_F32);
-        auto actual=dflash::vision::detail::linear(c,w,x,b);
-        auto unbiased=dflash::vision::detail::linear(c,w,x,nullptr);
+        auto actual=dflash::vision::detail::linear(c,w,x,b,preserve);
+        auto unbiased=dflash::vision::detail::linear(c,w,x,nullptr,preserve);
         auto graph=ggml_new_graph(c);
         for(auto t:{raw_dot,actual,unbiased}) { ggml_set_output(t); ggml_build_forward_expand(graph,t); }
         size_t required=0; ggml_gallocr_reserve_n_size(owner.allocator,graph,nullptr,nullptr,&required);
@@ -108,13 +112,17 @@ int main(int argc,char ** argv) {
         ggml_backend_tensor_set(b,bbits.data(),0,bbits.size()*sizeof(ggml_bf16_t));
         check(ggml_backend_graph_compute(backend,graph)==GGML_STATUS_SUCCESS,"graph execution failed");
         auto values=read(actual),dots=read(raw_dot),no_bias=read(unbiased);
-        size_t mismatch=0,early_match=0,dot_exact=0,dot_rounded=0,no_bias_mismatch=0;
+        size_t mismatch=0,early_match=0,dot_exact=0,dot_rounded=0,no_bias_mismatch=0,no_bias_raw=0,no_bias_round_raw=0;
         float max_abs=0;
         for(size_t i=0;i<values.size();++i) {
             check(std::isfinite(values[i]) && std::isfinite(dots[i]) && std::isfinite(no_bias[i]),"non-finite output");
             mismatch+=values[i]!=expected[i]; early_match+=values[i]==premature[i];
             dot_exact+=dots[i]==dot[i]; dot_rounded+=dots[i]==rounded_dot[i];
-            no_bias_mismatch+=no_bias[i]!=rounded_dot[i]; max_abs=std::max(max_abs,std::abs(values[i]-expected[i]));
+            no_bias_mismatch+=no_bias[i]!=rounded_dot[i]; no_bias_raw+=no_bias[i]!=dots[i];
+            // Original Torch HIP BF16 GEMM shares the native raw-product tie
+            // behavior. Gate the explicit final boundary, not universal GEMM RNE.
+            no_bias_round_raw+=no_bias[i]!=round_bf16(double(dots[i]));
+            max_abs=std::max(max_abs,std::abs(values[i]-expected[i]));
         }
         for(const auto & item:std::vector<std::pair<const char *,const std::vector<float> *>>{
                 {"weights.f32",&weights},{"inputs.f32",&inputs},{"bias.f32",&bias},{"expected.f32",&expected},
@@ -123,9 +131,10 @@ int main(int argc,char ** argv) {
         std::cout<<"shape="<<k<<","<<m<<","<<n<<" elements="<<values.size()<<" sensitive="<<sensitive
                  <<" mismatches="<<mismatch<<" max_abs="<<max_abs<<" premature_matches="<<early_match
                  <<" dot_exact_matches="<<dot_exact<<" dot_rounded_matches="<<dot_rounded
-                 <<" unbiased_mismatches="<<no_bias_mismatch<<" scratch_bytes="<<required<<'\n';
+                 <<" unbiased_rne_mismatches="<<no_bias_mismatch<<" unbiased_raw_mismatches="<<no_bias_raw
+                 <<" unbiased_round_raw_mismatches="<<no_bias_round_raw<<" scratch_bytes="<<required<<'\n';
         std::cout<<"example expected="<<expected[m]<<" premature="<<premature[m]<<" actual="<<values[m]<<" raw_dot="<<dots[m]<<'\n';
-        status=(mismatch || no_bias_mismatch) ? 3 : 0;
+        status=(mismatch || no_bias_round_raw) ? 3 : 0;
         std::cout<<(status==0 ? "PASS" : "ISSUES")<<": biased linear must round only after bias\n";
     } catch(const std::exception & error) { std::cerr<<"ERROR: "<<error.what()<<'\n'; }
     ggml_backend_free(backend);

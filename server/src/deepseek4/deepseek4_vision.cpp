@@ -108,11 +108,12 @@ std::vector<float> read(Tensor * t) {
 }
 }
 namespace detail {
-Tensor * linear(ggml_context * c,Tensor * weight,Tensor * input,Tensor * bias) {
+Tensor * linear(ggml_context * c,Tensor * weight,Tensor * input,Tensor * bias,bool preserve_biased_product) {
     // Source biased linears round after the bias. The HIP BF16 BLAS path can
     // round its product to BF16 even with GGML_PREC_F32; an F32 weight operand
     // preserves the product until the explicit final boundary below.
-    if(bias) weight=ggml_cast(c,weight,GGML_TYPE_F32);
+    // The CPU path already retains an F32 product; keep its existing reduction.
+    if(bias && preserve_biased_product) weight=ggml_cast(c,weight,GGML_TYPE_F32);
     auto y=ggml_mul_mat(c,weight,input);
     ggml_mul_mat_set_prec(y,GGML_PREC_F32);
     if(bias) y=ggml_add(c,y,ggml_cast(c,bias,GGML_TYPE_F32));
@@ -174,7 +175,10 @@ struct VisionRuntime::Impl {
     }
     Tensor * weight(const std::string & name) { return ggml_get_tensor(weights,name.c_str()); }
     Tensor * linear(ggml_context * c,Tensor * x,const std::string & name,bool bias=true) {
-        return detail::linear(c,weight(name+".weight"),x,bias ? weight(name+".bias") : nullptr);
+        const auto device=ggml_backend_get_device(backend);
+        const bool preserve=device && (ggml_backend_dev_type(device)==GGML_BACKEND_DEVICE_TYPE_GPU ||
+                                       ggml_backend_dev_type(device)==GGML_BACKEND_DEVICE_TYPE_IGPU);
+        return detail::linear(c,weight(name+".weight"),x,bias ? weight(name+".bias") : nullptr,preserve);
     }
     Tensor * norm(ggml_context * c,Tensor * x,const std::string & name) {
         return rounded(c,ggml_mul(c,ggml_rms_norm(c,x,config.rms_epsilon),
