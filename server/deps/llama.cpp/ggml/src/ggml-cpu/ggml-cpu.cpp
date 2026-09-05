@@ -471,6 +471,7 @@ static bool ggml_backend_cpu_device_supports_op(ggml_backend_dev_t dev, const st
             // The generic CPU kernel does not implement that contract.
             return !ggml_flash_attn_ext_is_ds4(op);
         case GGML_OP_PAGED_ATTN:
+        case GGML_OP_MUL_MAT_BIAS_BF16:
             return false;
         case GGML_OP_SSM_CONV:
             // Every nonzero mode is a dflash CUDA/HIP extension (SpecLA,

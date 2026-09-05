@@ -1200,9 +1200,10 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "MUL_MAT_GROUPED_SRC",
 
     "PAGED_ATTN",
+    "MUL_MAT_BIAS_BF16",
 };
 
-static_assert(GGML_OP_COUNT == 105, "GGML_OP_COUNT != 105");
+static_assert(GGML_OP_COUNT == 106, "GGML_OP_COUNT != 106");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1327,9 +1328,10 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "X*grouped(Y)",
 
     "paged_attn(q,k,v)",
+    "bf16(X*Y+bias)",
 };
 
-static_assert(GGML_OP_COUNT == 105, "GGML_OP_COUNT != 105");
+static_assert(GGML_OP_COUNT == 106, "GGML_OP_COUNT != 106");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -3416,6 +3418,22 @@ struct ggml_tensor * ggml_mul_mat(
     result->src[0] = a;
     result->src[1] = b;
 
+    return result;
+}
+
+struct ggml_tensor * ggml_mul_mat_bias_bf16(
+        struct ggml_context * ctx, struct ggml_tensor * w,
+        struct ggml_tensor * x, struct ggml_tensor * b) {
+    GGML_ASSERT(w && x && b);
+    GGML_ASSERT(w->type == GGML_TYPE_BF16 && x->type == GGML_TYPE_BF16 && b->type == GGML_TYPE_BF16);
+    GGML_ASSERT(ggml_is_contiguous(w) && ggml_is_contiguous(x) && ggml_is_contiguous(b));
+    GGML_ASSERT(w->ne[2] == 1 && w->ne[3] == 1 && x->ne[2] == 1 && x->ne[3] == 1);
+    GGML_ASSERT(w->ne[0] > 0 && w->ne[0] <= INT_MAX && w->ne[1] > 0 && w->ne[1] <= INT_MAX);
+    GGML_ASSERT(x->ne[0] == w->ne[0] && x->ne[1] > 0 && x->ne[1] <= INT_MAX);
+    GGML_ASSERT(b->ne[0] == w->ne[1] && ggml_is_vector(b));
+    struct ggml_tensor * result = ggml_new_tensor_2d(ctx, GGML_TYPE_BF16, w->ne[1], x->ne[1]);
+    result->op = GGML_OP_MUL_MAT_BIAS_BF16;
+    result->src[0] = w; result->src[1] = x; result->src[2] = b;
     return result;
 }
 
@@ -7771,6 +7789,7 @@ static void ggml_compute_backward(
         case GGML_OP_NONE: {
             // noop
         } break;
+        case GGML_OP_MUL_MAT_BIAS_BF16: // inference-only, no backward kernel
         case GGML_OP_COUNT:
         default: {
             GGML_ABORT("%s: unsupported ggml op for backward pass: %s\n", __func__, ggml_op_name(tensor->op));

@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <vector>
 #include <unistd.h>
+static_assert(GGML_OP_PAGED_ATTN==104 && GGML_OP_MUL_MAT_BIAS_BF16==105 && GGML_OP_COUNT==106,"operation ABI changed unexpectedly");
 static void check(bool b,const char *s) { if(!b) throw std::runtime_error(s); }
 static uint32_t bits(float v) { uint32_t b; std::memcpy(&b,&v,4); return b; }
 static std::vector<float> load(const std::filesystem::path&p,size_t n) {
@@ -64,12 +65,21 @@ int main(int argc,char**argv) {
             auto expected_u=ggml_cast(c,ggml_cast(c,raw,GGML_TYPE_BF16),GGML_TYPE_F32);
             auto g=ggml_new_graph(c);
             for(auto t:{y,u,expected_u}) { ggml_set_output(t); ggml_build_forward_expand(g,t); }
+            const size_t external=dflash::vision::detail::hip_bias_workspace(backend);
+            size_t ops=0;
+            for(int i=0;i<ggml_graph_n_nodes(g);++i) ops+=ggml_graph_node(g,i)->op==GGML_OP_MUL_MAT_BIAS_BF16;
+            check(ops==(dev=="hip:0"?1u:0u),"wrong actual fused-op graph dispatch");
+            check((external!=0)==(dev=="hip:0"),"wrong HIP-only capability");
+            const size_t before=dflash::vision::detail::hip_bias_launches(backend);
             size_t scratch=0; ggml_gallocr_reserve_n_size(owner.a,g,nullptr,nullptr,&scratch);
             check(scratch<128ULL*1024*1024,"graph scratch exceeds fixed bound");
             for(int i=0;i<ggml_graph_n_nodes(g);++i) check(ggml_backend_supports_op(backend,ggml_graph_node(g,i)),"unsupported node");
             check(ggml_gallocr_alloc_graph(owner.a,g),"graph allocation failed");
             ggml_backend_tensor_set(w,wv.data(),0,wv.size()*2); ggml_backend_tensor_set(b,bv.data(),0,bv.size()*2); ggml_backend_tensor_set(x,xv.data(),0,xv.size()*4);
             check(ggml_backend_graph_compute(backend,g)==GGML_STATUS_SUCCESS,"compute failed");
+            const size_t launches=dflash::vision::detail::hip_bias_launches(backend)-before;
+            check(launches==ops,"actual Lt launch count differs from explicit op count");
+            std::cout<<"fused_graph_ops="<<ops<<" actual_lt_launches="<<launches<<" retained_workspace_bytes="<<external<<'\n';
             std::vector<float> actual(ref.size()),unbiased(ref.size()),expected(ref.size());
             ggml_backend_tensor_get(y,actual.data(),0,actual.size()*4); ggml_backend_tensor_get(u,unbiased.data(),0,unbiased.size()*4); ggml_backend_tensor_get(expected_u,expected.data(),0,expected.size()*4);
             size_t bad=0,ubad=0; float maxabs=0;

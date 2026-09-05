@@ -45,6 +45,7 @@ endif()
 
 find_package(hip     REQUIRED)
 find_package(hipblas REQUIRED)
+find_package(hipblaslt REQUIRED)
 find_package(rocblas REQUIRED)
 
 if (GGML_HIP_RCCL)
@@ -167,4 +168,4 @@ get_filename_component(GGML_HIP_RUNTIME_DIR "${hip_DIR}/../.." ABSOLUTE)
 target_link_directories(ggml-hip BEFORE PRIVATE "${GGML_HIP_RUNTIME_DIR}")
 target_link_options(ggml-hip PRIVATE "-L${GGML_HIP_RUNTIME_DIR}")
 
-target_link_libraries(ggml-hip PRIVATE ggml-base hip::host roc::rocblas roc::hipblas)
+target_link_libraries(ggml-hip PRIVATE ggml-base hip::host roc::rocblas roc::hipblas roc::hipblaslt)

@@ -53,6 +53,9 @@ private:
 
 // The same geometry primitives used by the runtime and standalone unit tests.
 namespace detail {
+// HIP registry capability; zero on CPU/NVIDIA or an unavailable backend.
+size_t hip_bias_workspace(ggml_backend_t);
+size_t hip_bias_launches(ggml_backend_t);
 ggml_tensor * linear(ggml_context *, ggml_tensor * weight, ggml_tensor * input, ggml_tensor * bias,
                      bool preserve_biased_product, ggml_backend_t backend = nullptr);
 void rotary_tables(PatchGrid grid, std::vector<float> & cosine, std::vector<float> & sine);

@@ -617,6 +617,8 @@ extern "C" {
 
         GGML_OP_PAGED_ATTN,
 
+        GGML_OP_MUL_MAT_BIAS_BF16, // explicit HIP-only DS4V fused bias
+
         GGML_OP_COUNT,
     };
 
@@ -1455,6 +1457,12 @@ extern "C" {
     // A: k columns, n rows => [ne03, ne02, n, k]
     // B: k columns, m rows  (i.e. we transpose it internally) => [ne03 * x, ne02 * y, m, k]
     // result is n columns, m rows => [ne03 * x, ne02 * y, m, n]
+    // Explicit inference-only BF16 W[k,m], X[k,n], bias[m] -> BF16 Y[m,n].
+    // Contiguous 2D operands only; HIP Lt capability required, no fallback.
+    GGML_API struct ggml_tensor * ggml_mul_mat_bias_bf16(
+            struct ggml_context * ctx, struct ggml_tensor * weight,
+            struct ggml_tensor * input, struct ggml_tensor * bias);
+
     GGML_API struct ggml_tensor * ggml_mul_mat(
             struct ggml_context * ctx,
             struct ggml_tensor  * a,

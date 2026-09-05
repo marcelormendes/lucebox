@@ -108,8 +108,26 @@ std::vector<float> read(Tensor * t) {
 }
 }
 namespace detail {
+static size_t hip_bias_query(ggml_backend_t backend,const char * name) {
+    if(!backend) return 0;
+    auto device=ggml_backend_get_device(backend);
+    if(!device) return 0;
+    auto reg=ggml_backend_dev_backend_reg(device);
+    if(!reg) return 0;
+    using Query=size_t (*)(ggml_backend_t);
+    auto query=reinterpret_cast<Query>(ggml_backend_reg_get_proc_address(reg,name));
+    return query ? query(backend) : 0;
+}
+size_t hip_bias_workspace(ggml_backend_t b) { return hip_bias_query(b,"ggml_backend_hip_vision_bias_bf16_workspace"); }
+size_t hip_bias_launches(ggml_backend_t b) { return hip_bias_query(b,"ggml_backend_hip_vision_bias_bf16_launches"); }
 Tensor * linear(ggml_context * c,Tensor * weight,Tensor * input,Tensor * bias,bool preserve_biased_product,ggml_backend_t backend) {
-    (void)backend; // RED fixture probe: production arithmetic is unchanged.
+    // HIP's explicit capability is required: generic supports_op defaults on
+    // other backends are not evidence of this source-specific fused operation.
+    if(bias && hip_bias_workspace(backend)) {
+        auto y=ggml_mul_mat_bias_bf16(c,weight,ggml_cast(c,input,GGML_TYPE_BF16),bias);
+        require(ggml_backend_supports_op(backend,y),"HIP fused BF16 vision linear unsupported; fallback forbidden");
+        return ggml_cast(c,y,GGML_TYPE_F32);
+    }
     // Source biased linears round after the bias. The HIP BF16 BLAS path can
     // round its product to BF16 even with GGML_PREC_F32; an F32 weight operand
     // preserves the product until the explicit final boundary below.
@@ -179,7 +197,7 @@ struct VisionRuntime::Impl {
         const auto device=ggml_backend_get_device(backend);
         const bool preserve=device && (ggml_backend_dev_type(device)==GGML_BACKEND_DEVICE_TYPE_GPU ||
                                        ggml_backend_dev_type(device)==GGML_BACKEND_DEVICE_TYPE_IGPU);
-        return detail::linear(c,weight(name+".weight"),x,bias ? weight(name+".bias") : nullptr,preserve);
+        return detail::linear(c,weight(name+".weight"),x,bias ? weight(name+".bias") : nullptr,preserve,backend);
     }
     Tensor * norm(ggml_context * c,Tensor * x,const std::string & name) {
         return rounded(c,ggml_mul(c,ggml_rms_norm(c,x,config.rms_epsilon),
@@ -196,7 +214,8 @@ struct VisionRuntime::Impl {
         // reserve_n_size calculates requirements without allocating a backend buffer.
         size_t required=0;
         ggml_gallocr_reserve_n_size(allocator,g.graph,nullptr,nullptr,&required);
-        require(required<=MAX_SCRATCH,"vision scratch exceeds 2 GiB bound");
+        const size_t external=detail::hip_bias_workspace(backend);
+        require(external<=MAX_SCRATCH && required<=MAX_SCRATCH-external,"vision scratch including retained Lt workspace exceeds 2 GiB bound");
         for(int i=0;i<ggml_graph_n_nodes(g.graph);++i)
             require(ggml_backend_supports_op(backend,ggml_graph_node(g.graph,i)),"backend does not support vision graph operation");
         require(ggml_gallocr_reserve(allocator,g.graph),"scratch reservation failed");
@@ -358,5 +377,11 @@ bool VisionRuntime::sentinel(Sentinel identity,std::vector<float> & output,std::
 void VisionRuntime::release_scratch() { if(impl_ && impl_->allocator) { ggml_gallocr_free(impl_->allocator); impl_->allocator=nullptr; } }
 const VisionConfig * VisionRuntime::config() const { return impl_ ? &impl_->config : nullptr; }
 size_t VisionRuntime::weight_bytes() const { return impl_ ? ggml_backend_buffer_get_size(impl_->buffer) : 0; }
-size_t VisionRuntime::scratch_bytes() const { return impl_ && impl_->allocator ? ggml_gallocr_get_buffer_size(impl_->allocator,0) : 0; }
+size_t VisionRuntime::scratch_bytes() const {
+    if(!impl_) return 0;
+    // This conservative reservation remains after release_scratch(): the HIP
+    // context retains its workspace until backend destruction.
+    return detail::hip_bias_workspace(impl_->backend) +
+        (impl_->allocator ? ggml_gallocr_get_buffer_size(impl_->allocator,0) : 0);
+}
 } // namespace dflash::vision

@@ -149,3 +149,30 @@ Append `hip:0` or `hip:1` to an encode/load-only probe command to request that
 device explicitly. It fails if unavailable and never falls back to CPU. Building
 the target is not GPU qualification. Do not run it on GPU before the private text
 load proof and the operator's GPU window permit it.
+
+
+## Explicit HIP fused-bias source comparison
+
+`ds4v_linear_source cpu|hip:0 tiny|patch|qkv FIXTURE_DIR REFERENCE_F32 NEW_OUTPUT_DIR`
+runs the shared production vision-linear helper on exact BF16 values stored as
+F32 fixture files. Frozen source fixtures, input/library hashes, actual device
+identity, and GPU release must be checked by the external supervisor. The tool
+never selects a different backend or modifies a reference. Exit 3 preserves a
+numerical failure; it is not a successful qualification. HIP requires exactly
+one explicit fused operation in the graph and exactly one actual Lt launch.
+The unbiased lane separately retains its ordinary product and final BF16 cast.
+
+The historical `ds4v_linear_rounding` mathematical RNE probe continues to test
+its explicitly requested old helper mode (no HIP capability argument). Its
+biased RNE oracle differs from the frozen original HIP fused-source oracle;
+it does not qualify the new runtime operation. Use `ds4v_linear_source` and
+then the unchanged full-image gates for the actual runtime path.
+
+HIP biased linears now use a dedicated, source-configured BF16 hipBLASLt bias
+epilogue operation. CPU/NVIDIA and unbiased graph construction retain the
+previous implementation. The HIP backend retains one 76 MiB workspace outside
+the graph allocator, charged against the 2 GiB scratch bound and included in
+`scratch_bytes()` even after `release_scratch()`. It is freed when the borrowed
+backend context is destroyed. Graphs containing the operation do not use HIP
+graph capture. Only the pinned Radeon RX 7900 XT reference is the qualification
+target; other HIP hardware has not been qualified.

@@ -3,6 +3,7 @@
 #include "ggml-backend-impl.h"
 
 #include "ggml-cuda/common.cuh"
+#include "ggml-cuda/vision-bias.cuh"
 #include "ggml-cuda/acc.cuh"
 #include "ggml-cuda/add-id.cuh"
 #include "ggml-cuda/arange.cuh"
@@ -766,6 +767,16 @@ ggml_backend_cuda_context::~ggml_backend_cuda_context() {
         luce_q8_memo.pop_back();
     }
 
+#if defined(GGML_USE_HIP)
+    if (vision_bias_workspace) {
+        ggml_cuda_set_device(device);
+        // The latest event follows every use of the shared workspace.
+        if (vision_bias_launches) CUDA_CHECK(cudaEventSynchronize(vision_bias_event));
+        CUDA_CHECK(cudaFree(vision_bias_workspace));
+        CUDA_CHECK(cudaEventDestroy(vision_bias_event));
+    }
+    if (vision_bias_handle) CUBLAS_CHECK(hipblasLtDestroy(vision_bias_handle));
+#endif
     if (copy_event != nullptr) {
         CUDA_CHECK(cudaEventDestroy(copy_event));
     }
@@ -3610,6 +3621,13 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
         case GGML_OP_FLASH_ATTN_SPARSE:
             ggml_cuda_flash_attn_sparse(ctx, dst);
             break;
+        case GGML_OP_MUL_MAT_BIAS_BF16:
+#if defined(GGML_USE_HIP)
+            ggml_hip_vision_bias(ctx, dst);
+            break;
+#else
+            return false;
+#endif
         case GGML_OP_PAGED_ATTN:
             ggml_cuda_paged_attn(ctx, dst);
             break;
@@ -3899,6 +3917,9 @@ static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
 
     for (int i = 0; i < cgraph->n_nodes; i++) {
         ggml_tensor * node = cgraph->nodes[i];
+        // This explicit opt-in op uses a host heuristic and retained workspace
+        // event. Qualification is direct execution, never graph capture/replay.
+        if (node->op == GGML_OP_MUL_MAT_BIAS_BF16) return false;
 
         if (ggml_is_empty(node) || node->op == GGML_OP_RESHAPE || node->op == GGML_OP_TRANSPOSE || node->op == GGML_OP_VIEW || node->op == GGML_OP_PERMUTE || node->op == GGML_OP_NONE) {
             continue;
@@ -6447,6 +6468,12 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
             return ggml_cuda_flash_attn_ext_supported(dev_ctx->device, op);
         case GGML_OP_FLASH_ATTN_SPARSE:
             return true;  // Always supported on CUDA
+        case GGML_OP_MUL_MAT_BIAS_BF16:
+#if defined(GGML_USE_HIP)
+            return ggml_hip_vision_bias_supported(op);
+#else
+            return false;
+#endif
         case GGML_OP_PAGED_ATTN:
             return ggml_cuda_paged_attn_supported(op);
         case GGML_OP_CROSS_ENTROPY_LOSS:
@@ -6624,7 +6651,21 @@ static ggml_backend_feature * ggml_backend_cuda_get_features(ggml_backend_reg_t 
     GGML_UNUSED(reg);
 }
 
+#if defined(GGML_USE_HIP)
+static size_t ggml_backend_hip_vision_bias_bf16_workspace(ggml_backend_t backend) {
+    return backend && ggml_backend_is_cuda(backend) ? 76ULL*1024*1024 : 0;
+}
+static size_t ggml_backend_hip_vision_bias_bf16_launches(ggml_backend_t backend) {
+    return backend && ggml_backend_is_cuda(backend) ?
+        static_cast<ggml_backend_cuda_context *>(backend->context)->vision_bias_launches : 0;
+}
+#endif
+
 static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
+#if defined(GGML_USE_HIP)
+    if (strcmp(name,"ggml_backend_hip_vision_bias_bf16_workspace")==0) return (void *)ggml_backend_hip_vision_bias_bf16_workspace;
+    if (strcmp(name,"ggml_backend_hip_vision_bias_bf16_launches")==0) return (void *)ggml_backend_hip_vision_bias_bf16_launches;
+#endif
     GGML_UNUSED(reg);
     if (strcmp(name, "ggml_backend_comm_init") == 0) {
         return (void *)ggml_backend_cuda_comm_init;
